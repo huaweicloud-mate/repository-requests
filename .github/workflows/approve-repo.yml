@@ -1,0 +1,25 @@
+name: Approve Repo Request
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to approve'
+        required: true
+        type: string
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add request label
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit ${{ inputs.issue_number }} \
+            -R ${{ github.repository }} \
+            --add-label "request/create-repo"
