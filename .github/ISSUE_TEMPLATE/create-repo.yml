@@ -1,6 +1,6 @@
 name: 🏗️ 新建仓库申请
 description: 申请在 huaweicloud-mate 组织下创建新仓库
-labels: ["request/create-repo", "status/pending"]
+labels: ["status/pending"]
 body:
   - type: markdown
     attributes:
@@ -9,7 +9,7 @@ body:
         
         填写以下信息来申请在 `huaweicloud-mate` 组织下创建新仓库。
         
-        提交后，机器人将自动处理您的申请：创建仓库 → 初始化配置 → 关闭此 Issue。
+        提交后，管理员审核通过后将自动创建仓库。
 
   - type: input
     id: repo-name
