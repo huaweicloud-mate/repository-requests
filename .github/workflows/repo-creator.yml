@@ -2,7 +2,7 @@ name: Repository Creator
 
 on:
   issues:
-    types: [opened, labeled]
+    types: [labeled]
 
 permissions:
   issues: write
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   create-repo:
-    if: contains(github.event.issue.labels.*.name, 'request/create-repo')
+    if: github.event.label.name == 'request/create-repo'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
