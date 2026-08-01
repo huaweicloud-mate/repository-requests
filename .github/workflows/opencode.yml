@@ -45,5 +45,5 @@ jobs:
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         with:
-          model: deepseek/deepseek-pro
+          model: deepseek/deepseek-v4-pro
           share: true
