@@ -9,6 +9,8 @@ import sys
 import re
 import urllib.request
 import urllib.error
+import subprocess
+import tempfile
 
 def github_api(method, path, data=None, token=None):
     """Call GitHub REST API"""
@@ -99,10 +101,71 @@ def create_file_in_repo(org, repo, path, content, message, token, branch="main")
     data = {"message": message, "content": encoded, "branch": branch}
     return github_api("PUT", f"/repos/{org}/{repo}/contents/{path}", data, token=token)
 
+def create_gitcode_repo(repo_name, description, gitcode_org, gitcode_username, gitcode_token):
+    """
+    Try to create a repo on GitCode via API.
+    Falls back to git push attempt if API is unavailable.
+    Returns (success: bool, message: str)
+    """
+    # Approach 1: Try GitCode REST API
+    api_token = os.environ.get("GITCODE_API_TOKEN", gitcode_token)
+    url = f"https://gitcode.com/api/v4/projects"
+    headers = {
+        "PRIVATE-TOKEN": api_token,
+        "Content-Type": "application/json",
+        "User-Agent": "repo-creator-bot",
+        "Accept": "application/json",
+    }
+    data = {
+        "name": repo_name,
+        "path": repo_name,
+        "namespace_id": gitcode_org,
+        "description": description,
+        "visibility": "public",
+    }
+    body = json.dumps(data).encode()
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status in (200, 201):
+                result = json.loads(resp.read())
+                return True, f"GitCode repo created: {result.get('web_url', '')}"
+    except urllib.error.HTTPError as e:
+        if e.code == 400 and "has already been taken" in e.read().decode():
+            return True, "GitCode repo already exists"
+        print(f"GitCode API failed (status {e.code}), trying git push...", file=sys.stderr)
+    except Exception as e:
+        print(f"GitCode API error: {e}, trying git push...", file=sys.stderr)
+
+    # Approach 2: Try git push to create (works on some platforms)
+    gitcode_url = f"https://{gitcode_username}:{gitcode_token}@gitcode.com/{gitcode_org}/{repo_name}.git"
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subprocess.run(
+                ["git", "clone", "--depth=1",
+                 f"https://github.com/huaweicloud-mate/{repo_name}.git",
+                 tmpdir],
+                capture_output=True, timeout=30, check=True
+            )
+            result = subprocess.run(
+                ["git", "-C", tmpdir, "push", gitcode_url, "main", "--force"],
+                capture_output=True, timeout=30, text=True
+            )
+            if result.returncode == 0:
+                return True, "GitCode repo created via git push"
+            stderr = result.stderr[:200]
+            if "already exists" in stderr.lower() or "already" in stderr.lower():
+                return True, "GitCode repo already exists"
+            return False, f"GitCode push failed: {stderr}"
+    except subprocess.TimeoutExpired:
+        return False, "GitCode push timed out"
+    except Exception as e:
+        return False, f"GitCode create error: {str(e)}"
+
 def initialize_repo(org, repo_name, language, license_name, description, token):
     """Initialize the new repo with standard community files"""
     results = []
-    
+
     labels_to_create = [
         ("bug", "d73a4a", "Bug report"),
         ("enhancement", "a2eeef", "Feature request"),
@@ -123,7 +186,7 @@ def initialize_repo(org, repo_name, language, license_name, description, token):
         r = add_label(org, repo_name, name, color, desc, token)
         if r and "error" not in r:
             results.append(f"  label: {name}")
-    
+
     contributing = f"""# 贡献指南
 
 感谢您对 `{repo_name}` 项目的关注！
@@ -353,7 +416,11 @@ def main():
     token = os.environ.get("GITHUB_TOKEN", "")
     org = os.environ.get("ORG_NAME", "huaweicloud-mate")
     bot_token = os.environ.get("BOT_TOKEN", token)
-    
+
+    gitcode_org = os.environ.get("GITCODE_ORG", "hd-vector")
+    gitcode_username = os.environ.get("GITCODE_USERNAME", "")
+    gitcode_token = os.environ.get("GITCODE_TOKEN", "")
+
     if not event_path or not os.path.exists(event_path):
         print("No event payload found")
         return
@@ -367,7 +434,7 @@ def main():
     issue_body = issue.get("body", "") or ""
     issue_labels = [l["name"] for l in issue.get("labels", [])]
     repo_full = os.environ.get("GITHUB_REPOSITORY", "")
-    
+
     print(f"Processing Issue #{issue_number}: {issue_title}")
     print(f"Labels: {issue_labels}")
 
@@ -418,7 +485,7 @@ def main():
 
     print(f"Creating repo: {org}/{repo_name}")
     result = create_repo(org, repo_name, description, visibility, bot_token)
-    
+
     if not result or (isinstance(result, dict) and "error" in result):
         error_detail = result.get("error", "Unknown error") if isinstance(result, dict) else "Unknown error"
         error_msg = f"### 🤖 仓库创建机器人\n\n❌ 创建仓库失败！\n\n```\n{error_detail}\n```\n\n请检查错误信息，修改后重新提交。"
@@ -441,6 +508,20 @@ def main():
     init_results = initialize_repo(org, repo_name, language, license_name, description, bot_token)
     print(f"Initialized: {len(init_results)} items")
 
+    # Try to create corresponding repo on GitCode
+    gitcode_result = ""
+    if gitcode_username and gitcode_token:
+        print(f"Creating GitCode repo: {gitcode_org}/{repo_name}")
+        success, msg = create_gitcode_repo(repo_name, description, gitcode_org, gitcode_username, gitcode_token)
+        if success:
+            gitcode_result = f"- GitCode: ✅ {msg}\n"
+            print(f"GitCode: {msg}")
+        else:
+            gitcode_result = f"- GitCode: ⚠️ 自动创建失败（{msg}），请在 GitCode 手动创建 `{gitcode_org}/{repo_name}` 仓库\n"
+            print(f"GitCode failed: {msg}")
+    else:
+        gitcode_result = "- GitCode: ⚠️ 未配置凭据，请手动创建\n"
+
     success_parts = [
         f"### 🤖 仓库创建机器人\n",
         f"✅ 仓库创建成功！\n",
@@ -456,6 +537,7 @@ def main():
     success_parts.append(f"\n**初始化内容：**\n")
     for item in init_results:
         success_parts.append(f"- {item}\n")
+    success_parts.append(f"\n**GitCode 同步：**\n{gitcode_result}\n")
     success_parts.append(f"\n仓库已包含基础社区治理配置，可以开始开发了！🚀\n")
     success_parts.append(f"\n<sub>repo-creator-bot v1.0</sub>")
 
