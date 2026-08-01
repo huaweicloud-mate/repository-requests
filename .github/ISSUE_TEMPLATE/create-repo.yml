@@ -80,6 +80,38 @@ body:
       description: 用逗号分隔的标签，用于分类和搜索
       placeholder: sdk, api, evaluation
 
+  - type: markdown
+    attributes:
+      value: |
+        ## 仓库角色配置
+        
+        为仓库指定管理员和维护者。多个人员用逗号或换行分隔。
+
+  - type: textarea
+    id: maintainer
+    attributes:
+      label: Maintainer（维护者）
+      description: 拥有仓库管理权限的 GitHub 用户名，多个用逗号分隔
+      placeholder: alice, bob
+    validations:
+      required: true
+
+  - type: textarea
+    id: writer
+    attributes:
+      label: Writer（写入者）
+      description: 拥有代码推送权限的 GitHub 用户名，多个用逗号分隔
+      placeholder: charlie, dave
+    validations:
+      required: true
+
+  - type: textarea
+    id: triage
+    attributes:
+      label: Triage（分类者）
+      description: 拥有 Issue/PR 管理权限的 GitHub 用户名，多个用逗号分隔（可选）
+      placeholder: eve, frank
+
   - type: textarea
     id: justification
     attributes:
@@ -97,6 +129,6 @@ body:
         - label: 仓库名称符合命名规范（小写字母、数字、连字符）
           required: true
         - label: 我已确认组织内不存在同名仓库
+        - label: 以上填写的 Maintainer 和 Writer 均为组织成员
           required: true
         - label: 我了解创建的仓库将遵循组织的社区治理规范
-          required: true
