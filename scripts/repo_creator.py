@@ -2,6 +2,7 @@
 """
 Repository Creator Bot
 Reads a repo-creation Issue, creates the repo, initializes it, and closes the Issue.
+Sends Feishu reminder to manually create GitCode repo.
 """
 import json
 import os
@@ -9,11 +10,8 @@ import sys
 import re
 import urllib.request
 import urllib.error
-import subprocess
-import tempfile
 
 def github_api(method, path, data=None, token=None):
-    """Call GitHub REST API"""
     url = f"https://api.github.com{path}"
     headers = {
         "Accept": "application/vnd.github+json",
@@ -38,7 +36,6 @@ def github_api(method, path, data=None, token=None):
         return {"error": str(e)}
 
 def parse_issue_body(body):
-    """Parse the YAML-like issue body from GitHub Issue form"""
     fields = {}
     sections = re.split(r'### ', body)
     for section in sections[1:]:
@@ -53,7 +50,6 @@ def parse_issue_body(body):
     return fields
 
 def validate_repo_name(name):
-    """Validate repo name follows GitHub naming rules"""
     if not name:
         return False, "仓库名称不能为空"
     if not re.match(r'^[a-z0-9][a-z0-9-]*[a-z0-9]$', name) and not re.match(r'^[a-z0-9]$', name):
@@ -65,14 +61,12 @@ def validate_repo_name(name):
     return True, ""
 
 def check_repo_exists(org, name, token):
-    """Check if a repo with this name already exists"""
     result = github_api("GET", f"/repos/{org}/{name}", token=token)
     if isinstance(result, dict) and "error" not in result and "id" in result:
         return True
     return False
 
 def create_repo(org, name, description, visibility, token):
-    """Create a new repository in the organization"""
     data = {
         "name": name,
         "description": description,
@@ -85,85 +79,81 @@ def create_repo(org, name, description, visibility, token):
     return github_api("POST", f"/orgs/{org}/repos", data, token=token)
 
 def set_repo_topics(org, name, topics, token):
-    """Set repository topics"""
     data = {"names": topics}
     return github_api("PUT", f"/repos/{org}/{name}/topics", data, token=token)
 
 def add_label(org, repo, name, color, description, token):
-    """Add a label to the repo"""
     data = {"name": name, "color": color, "description": description}
     return github_api("POST", f"/repos/{org}/{repo}/labels", data, token=token)
 
 def create_file_in_repo(org, repo, path, content, message, token, branch="main"):
-    """Create a file in the repo"""
     import base64
     encoded = base64.b64encode(content.encode('utf-8')).decode('ascii')
     data = {"message": message, "content": encoded, "branch": branch}
     return github_api("PUT", f"/repos/{org}/{repo}/contents/{path}", data, token=token)
 
-def create_gitcode_repo(repo_name, description, gitcode_org, gitcode_username, gitcode_token):
-    """
-    Try to create a repo on GitCode via API.
-    Falls back to git push attempt if API is unavailable.
-    Returns (success: bool, message: str)
-    """
-    # Approach 1: Try GitCode REST API
-    api_token = os.environ.get("GITCODE_API_TOKEN", gitcode_token)
-    url = f"https://gitcode.com/api/v4/projects"
-    headers = {
-        "PRIVATE-TOKEN": api_token,
-        "Content-Type": "application/json",
-        "User-Agent": "repo-creator-bot",
-        "Accept": "application/json",
-    }
-    data = {
-        "name": repo_name,
-        "path": repo_name,
-        "namespace_id": gitcode_org,
-        "description": description,
-        "visibility": "public",
-    }
-    body = json.dumps(data).encode()
-    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+def get_feishu_token(app_id, app_secret):
+    url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    data = {"app_id": app_id, "app_secret": app_secret}
+    req = urllib.request.Request(url, data=json.dumps(data).encode(), headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status in (200, 201):
-                result = json.loads(resp.read())
-                return True, f"GitCode repo created: {result.get('web_url', '')}"
-    except urllib.error.HTTPError as e:
-        if e.code == 400 and "has already been taken" in e.read().decode():
-            return True, "GitCode repo already exists"
-        print(f"GitCode API failed (status {e.code}), trying git push...", file=sys.stderr)
+            result = json.loads(resp.read())
+            return result.get("tenant_access_token")
     except Exception as e:
-        print(f"GitCode API error: {e}, trying git push...", file=sys.stderr)
+        print(f"Feishu auth error: {e}", file=sys.stderr)
+        return None
 
-    # Approach 2: Try git push to create (works on some platforms)
-    gitcode_url = f"https://{gitcode_username}:{gitcode_token}@gitcode.com/{gitcode_org}/{repo_name}.git"
+def send_feishu_dm(open_id, card, app_id, app_secret):
+    token = get_feishu_token(app_id, app_secret)
+    if not token:
+        return False
+    url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
+    body = {"receive_id": open_id, "msg_type": "interactive", "content": json.dumps(card, ensure_ascii=False)}
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            subprocess.run(
-                ["git", "clone", "--depth=1",
-                 f"https://github.com/huaweicloud-mate/{repo_name}.git",
-                 tmpdir],
-                capture_output=True, timeout=30, check=True
-            )
-            result = subprocess.run(
-                ["git", "-C", tmpdir, "push", gitcode_url, "main", "--force"],
-                capture_output=True, timeout=30, text=True
-            )
-            if result.returncode == 0:
-                return True, "GitCode repo created via git push"
-            stderr = result.stderr[:200]
-            if "already exists" in stderr.lower() or "already" in stderr.lower():
-                return True, "GitCode repo already exists"
-            return False, f"GitCode push failed: {stderr}"
-    except subprocess.TimeoutExpired:
-        return False, "GitCode push timed out"
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read())
+            return result.get("code") == 0
     except Exception as e:
-        return False, f"GitCode create error: {str(e)}"
+        print(f"Feishu send error: {e}", file=sys.stderr)
+        return False
+
+def send_gitcode_reminder(repo_name, repo_url):
+    app_id = os.environ.get("FEISHU_APP_ID", "")
+    app_secret = os.environ.get("FEISHU_APP_SECRET", "")
+    admin_open_id = os.environ.get("FEISHU_ADMIN_OPEN_ID", "")
+    gitcode_org = os.environ.get("GITCODE_ORG", "hd-vector")
+
+    if not all([app_id, app_secret, admin_open_id]):
+        print("Feishu not configured, skipping GitCode reminder")
+        return
+
+    gitcode_create_url = f"https://gitcode.com/{gitcode_org}/projects/new"
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {"title": {"tag": "plain_text", "content": "📋 请在 GitCode 创建同名仓库"}, "template": "yellow"},
+        "elements": [
+            {"tag": "markdown", "content": f"GitHub 仓库已创建，请手动在 GitCode 创建同名仓库以启用自动同步。"},
+            {"tag": "div", "fields": [
+                {"is_short": False, "text": {"tag": "lark_md", "content": f"**仓库名称**：`{repo_name}`"}},
+                {"is_short": False, "text": {"tag": "lark_md", "content": f"**GitCode 路径**：`{gitcode_org}/{repo_name}`"}},
+                {"is_short": False, "text": {"tag": "lark_md", "content": f"**GitHub**：[{repo_url}]({repo_url})"}},
+            ]},
+            {"tag": "hr"},
+            {"tag": "action", "actions": [
+                {"tag": "button", "text": {"tag": "plain_text", "content": "去 GitCode 创建仓库"}, "type": "primary", "url": gitcode_create_url},
+                {"tag": "button", "text": {"tag": "plain_text", "content": "查看 GitHub 仓库"}, "type": "default", "url": repo_url},
+            ]},
+            {"tag": "note", "elements": [{"tag": "plain_text", "content": "创建后任何 push 都会自动同步到 GitCode"}]}
+        ]
+    }
+    if send_feishu_dm(admin_open_id, card, app_id, app_secret):
+        print("GitCode reminder sent to Feishu")
 
 def initialize_repo(org, repo_name, language, license_name, description, token):
-    """Initialize the new repo with standard community files"""
     results = []
 
     labels_to_create = [
@@ -417,10 +407,6 @@ def main():
     org = os.environ.get("ORG_NAME", "huaweicloud-mate")
     bot_token = os.environ.get("BOT_TOKEN", token)
 
-    gitcode_org = os.environ.get("GITCODE_ORG", "hd-vector")
-    gitcode_username = os.environ.get("GITCODE_USERNAME", "")
-    gitcode_token = os.environ.get("GITCODE_TOKEN", "")
-
     if not event_path or not os.path.exists(event_path):
         print("No event payload found")
         return
@@ -508,19 +494,8 @@ def main():
     init_results = initialize_repo(org, repo_name, language, license_name, description, bot_token)
     print(f"Initialized: {len(init_results)} items")
 
-    # Try to create corresponding repo on GitCode
-    gitcode_result = ""
-    if gitcode_username and gitcode_token:
-        print(f"Creating GitCode repo: {gitcode_org}/{repo_name}")
-        success, msg = create_gitcode_repo(repo_name, description, gitcode_org, gitcode_username, gitcode_token)
-        if success:
-            gitcode_result = f"- GitCode: ✅ {msg}\n"
-            print(f"GitCode: {msg}")
-        else:
-            gitcode_result = f"- GitCode: ⚠️ 自动创建失败（{msg}），请在 GitCode 手动创建 `{gitcode_org}/{repo_name}` 仓库\n"
-            print(f"GitCode failed: {msg}")
-    else:
-        gitcode_result = "- GitCode: ⚠️ 未配置凭据，请手动创建\n"
+    # Send Feishu reminder to create GitCode repo manually
+    send_gitcode_reminder(repo_name, repo_url)
 
     success_parts = [
         f"### 🤖 仓库创建机器人\n",
@@ -537,7 +512,7 @@ def main():
     success_parts.append(f"\n**初始化内容：**\n")
     for item in init_results:
         success_parts.append(f"- {item}\n")
-    success_parts.append(f"\n**GitCode 同步：**\n{gitcode_result}\n")
+    success_parts.append(f"\n> ℹ️ 已发送飞书提醒：请在 GitCode 手动创建同名仓库 `hd-vector/{repo_name}` 以启用自动同步\n")
     success_parts.append(f"\n仓库已包含基础社区治理配置，可以开始开发了！🚀\n")
     success_parts.append(f"\n<sub>repo-creator-bot v1.0</sub>")
 
