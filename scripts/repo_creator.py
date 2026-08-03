@@ -247,19 +247,6 @@ updates:
     if r and "error" not in r:
         results.append("  dependabot.yml")
 
-    stale = """daysUntilStale: 60
-daysUntilClose: 7
-staleLabel: stale
-markComment: >
-  This issue has been automatically marked as stale because it has not had
-  recent activity. It will be closed if no further activity occurs.
-closeComment: >
-  This issue has been automatically closed due to inactivity.
-"""
-    r = create_file_in_repo(org, repo_name, ".github/stale.yml", stale, "chore: add stale bot config", token)
-    if r and "error" not in r:
-        results.append("  stale.yml")
-
     github_api("PUT", f"/repos/{org}/{repo_name}/vulnerability-alerts", token=token)
     github_api("PUT", f"/repos/{org}/{repo_name}/automated-security-fixes", token=token)
     results.append("  security alerts + auto fixes")
