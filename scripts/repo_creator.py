@@ -17,7 +17,7 @@ GITCODE_ USERNAME = os.environ.get("GITCODE_USERNAME",  "")
 GITCODE_TOKEN = os.environ.get("GITCODE_ TOKEN", "")
 
 FEISHU_APP_ID = os.environ.get(" FEISHU_APP_ID", "")
-GITCODE_API = "https://gi tcode.com/api/v4"
+GITCODE_API = "https://gi tcode.com/api/v5"
 GC_HEADERS = {"PRIVATE-TOKE N": GITCODE_TOKEN, "Content-Type": "applicati on/json"}
 
 FEISHU_APP_ID = os.environ.get("FE ISHU_APP_ID", "")
