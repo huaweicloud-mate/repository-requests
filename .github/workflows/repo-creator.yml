@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   create-repo:
-    if: github.event.label.name == 'request/create-repo'
+    if: github.event.label.name == 'status/approved'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

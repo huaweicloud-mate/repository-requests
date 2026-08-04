@@ -1,22 +1,37 @@
-name: 🏗️ 新建仓库申请
-description: 申请在 huaweicloud-mate 组织下创建新仓库
+name: " 新建仓库申请"
+description: "申请在 huaweicloud-mate 组织下创建新仓库"
 labels: ["status/pending"]
 body:
   - type: markdown
     attributes:
       value: |
         ## 新建仓库申请
-        
-        填写以下信息来申请在 `huaweicloud-mate` 组织下创建新仓库。
-        
-        提交后，管理员审核通过后将自动创建仓库。
+        huaweicloud-mate 组织仓库创建申请
+
+  - type: dropdown
+    id: repo_type
+    attributes:
+      label: 仓库类型
+      description: 选择仓库类型，决定初始化文件数量和模板
+      options:
+        - SDK
+        - Terraform Provider
+        - GitHub Action
+        - 框架集成
+        - Exporter / Plugin
+        - IoT SDK
+        - 示例 / Lab / Sample
+        - 文档 / 数据集
+        - 内部配置
+    validations:
+      required: true
 
   - type: input
-    id: repo-name
+    id: repo_name
     attributes:
       label: 仓库名称
-      description: 仓库的名称（仅小写字母、数字和连字符，如 my-awesome-project）
-      placeholder: my-awesome-project
+      description: 小写字母、数字和连字符，≤100字符，不以连字符开头/结尾，无连续连字符
+      placeholder: my-awesome-sdk
     validations:
       required: true
 
@@ -24,8 +39,8 @@ body:
     id: description
     attributes:
       label: 仓库描述
-      description: 简要描述仓库的用途和内容
-      placeholder: 这个仓库用于...
+      description: 简要描述仓库用途
+      placeholder: 该仓库用于...
     validations:
       required: true
 
@@ -33,7 +48,6 @@ body:
     id: visibility
     attributes:
       label: 可见性
-      description: 仓库的可见性设置
       options:
         - public
         - private
@@ -42,33 +56,14 @@ body:
       required: true
 
   - type: dropdown
-    id: language
-    attributes:
-      label: 主要编程语言
-      options:
-        - Python
-        - TypeScript
-        - Go
-        - Java
-        - Rust
-        - C++
-        - Shell
-        - Other
-      default: 0
-    validations:
-      required: true
-
-  - type: dropdown
     id: license
     attributes:
       label: 开源许可证
-      description: 仓库使用的开源许可证
+      description: 仅产品项目使用用户选择，其余类型强制 Apache-2.0
       options:
-        - Apache-2.0
+        - Apache-2.0（推荐）
         - MIT
-        - GPL-3.0
         - BSD-3-Clause
-        - 无
       default: 0
     validations:
       required: true
@@ -76,23 +71,32 @@ body:
   - type: textarea
     id: topics
     attributes:
-      label: 仓库标签（Topics）
-      description: 用逗号分隔的标签，用于分类和搜索
-      placeholder: sdk, api, evaluation
+      label: Topics 标签（至少 3 个）
+      description: 逗号或换行分隔，每个标签须匹配 [a-z0-9][a-z0-9.-]*
+      placeholder: "sdk, api, python"
+    validations:
+      required: true
 
   - type: markdown
     attributes:
       value: |
-        ## 仓库角色配置
-        
-        为仓库指定管理员和维护者。多个人员用逗号或换行分隔。
+        ## 仓库角色
+
+  - type: textarea
+    id: owner
+    attributes:
+      label: Owner（管理员，≥1 人）
+      description: 拥有仓库完整管理权限的 GitHub 用户名，逗号或换行分隔
+      placeholder: alice, bob
+    validations:
+      required: true
 
   - type: textarea
     id: maintainer
     attributes:
-      label: Maintainer（维护者）
-      description: 拥有仓库管理权限的 GitHub 用户名，多个用逗号分隔
-      placeholder: alice, bob
+      label: Maintainer（维护者，≥1 人）
+      description: 拥有维护权限的 GitHub 用户名，逗号或换行分隔
+      placeholder: charlie, dave
     validations:
       required: true
 
@@ -100,35 +104,30 @@ body:
     id: writer
     attributes:
       label: Writer（写入者）
-      description: 拥有代码推送权限的 GitHub 用户名，多个用逗号分隔
-      placeholder: charlie, dave
-    validations:
-      required: true
-
-  - type: textarea
-    id: triage
-    attributes:
-      label: Triage（分类者）
-      description: 拥有 Issue/PR 管理权限的 GitHub 用户名，多个用逗号分隔（可选）
+      description: 拥有推送权限的 GitHub 用户名（可选），逗号或换行分隔
       placeholder: eve, frank
 
   - type: textarea
     id: justification
     attributes:
       label: 申请理由
-      description: 为什么需要创建这个仓库？它解决什么问题？
-      placeholder: 这个仓库将用于...
+      description: 为什么需要创建这个仓库？解决什么问题？目标用户是谁？
+      placeholder: 该仓库用于...
     validations:
       required: true
 
   - type: checkboxes
     id: checklist
     attributes:
-      label: 确认
+      label: 确认清单
       options:
-        - label: 仓库名称符合命名规范（小写字母、数字、连字符）
+        - label: 仓库名称符合命名规范（小写字母、数字、连字符，≤100字符）
           required: true
         - label: 我已确认组织内不存在同名仓库
-        - label: 以上填写的 Maintainer 和 Writer 均为组织成员
+          required: true
+        - label: 以上填写的 Owner 和 Maintainer 均为组织成员
+          required: true
+        - label: Topics 标签不少于 3 个
           required: true
         - label: 我了解创建的仓库将遵循组织的社区治理规范
+          required: true
