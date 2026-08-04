@@ -17,7 +17,7 @@ GITCODE_USERNAME = os.environ.get("GITCODE_USERNAME", "")
 GITCODE_TOKEN = os.environ.get("GITCODE_TOKEN", "")
 
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
-GITCODE_API = "https://gitcode.com/api/v4"
+GITCODE_API = "https://api.gitcode.com/api/v5"
 GC_HEADERS = {"PRIVATE-TOKEN": GITCODE_TOKEN, "Content-Type": "application/json"}
 
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
@@ -76,26 +76,16 @@ def gitcode_api(method, path, data=None):
 
 
 def create_gitcode_repo(repo_name, description):
-    """在 GitCode 上创建同名仓库"""
-    # 获取 hd-vector group 的 ID
-    group_url = f"/groups/{GITCODE_ORG}"
-    group = gitcode_api("GET", group_url)
-    if not group or "id" not in group:
-        print(f"Failed to get GitCode group {GITCODE_ORG}")
-        return None
-
-    namespace_id = group["id"]
+    """在 GitCode 上创建同名仓库（v5 API）"""
     data = {
         "name": repo_name,
         "path": repo_name,
-        "namespace_id": namespace_id,
         "description": description or "",
-        "visibility": "public",
-        "initialize_with_readme": False,
+        "private": False,
     }
-    result = gitcode_api("POST", "/projects", data)
+    result = gitcode_api("POST", f"/orgs/{GITCODE_ORG}/repos", data)
     if result and "id" in result:
-        gitcode_url = result.get("web_url", f"https://gitcode.com/{GITCODE_ORG}/{repo_name}")
+        gitcode_url = result.get("html_url", f"https://gitcode.com/{GITCODE_ORG}/{repo_name}")
         print(f"GitCode repo created: {gitcode_url}")
         return gitcode_url
     print(f"Failed to create GitCode repo")
