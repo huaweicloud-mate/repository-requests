@@ -25,7 +25,7 @@ def api(method, path, data=None):
         return None
 
 
-def notify_feishu(repo_name, repo_type, repo_full, issue_number):
+def notify_feishu(repo_name, repo_type, repo_full, issue_number, author, description="", visibility="", reason=""):
     if not all([FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_ADMIN_OPEN_ID]):
         print("Feishu credentials not configured, skip notify")
         return
@@ -38,21 +38,32 @@ def notify_feishu(repo_name, repo_type, repo_full, issue_number):
         if not token:
             return
         issue_url = f"https://github.com/{repo_full}/issues/{issue_number}"
+        approve_url = f"https://github.com/{repo_full}/actions/workflows/approve-repo.yml"
         card = {
             "config": {"wide_screen_mode": True},
             "header": {"title": {"tag": "plain_text", "content": "  New Repo Request"}, "template": "blue"},
             "elements": [
-                {"tag": "markdown", "content": f"收到新的建仓申请（已通过校验）"},
-                {"tag": "div", "fields": [
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**仓库名称**\n{repo_name}"}},
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**类型**\n{repo_type}"}},
-                ]},
-                {"tag": "action", "actions": [
-                    {"tag": "button", "text": {"tag": "plain_text", "content": "查看 Issue"}, "type": "primary", "url": issue_url},
-                    {"tag": "button", "text": {"tag": "plain_text", "content": "Approve Repo"}, "type": "default",
-                     "url": f"https://github.com/{repo_full}/actions/workflows/approve-repo.yml?issue_number={issue_number}"},
-                ]},
-                {"tag": "note", "elements": [{"tag": "plain_text", "content": "huaweicloud-mate Repo Validator"}]}
+                {"tag": "markdown", "content": f"**{author}** 提交了建仓申请"},
+                {
+                    "tag": "div",
+                    "fields": [
+                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**仓库名称**\n{repo_name}"}},
+                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**可见性**\n{visibility}"}},
+                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**类型**\n{repo_type}"}},
+                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**描述**\n{description}"}},
+                    ]
+                },
+                {"tag": "hr"},
+                {"tag": "markdown", "content": f" 申请理由：{reason}"},
+                {"tag": "hr"},
+                {
+                    "tag": "action",
+                    "actions": [
+                        {"tag": "button", "text": {"tag": "plain_text", "content": "查看 Issue"}, "type": "default", "url": issue_url},
+                        {"tag": "button", "text": {"tag": "plain_text", "content": "  审批通过"}, "type": "primary", "url": f"{approve_url}?issue_number={issue_number}"},
+                    ]
+                },
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": f"点击审批通过 → 跳转 GitHub → 填入 Issue 号 #{issue_number} → Run workflow"}]}
             ]
         }
         urllib.request.urlopen(urllib.request.Request(
@@ -159,7 +170,11 @@ def main():
             api("POST", f"/repos/{repo_full}/issues/{number}/labels", {"labels": ["status/pending"]})
             msg = "##  建仓申请校验通过\n\n所有字段符合规范，等待管理员审批。"
             api("POST", comment_path, {"body": msg})
-            notify_feishu(repo_name, repo_type, repo_full, number)
+            author = issue.get("user", {}).get("login", "")
+            description = fields.get("仓库描述", "")
+            visibility = fields.get("可见性", "")
+            reason = fields.get("申请理由", "")
+            notify_feishu(repo_name, repo_type, repo_full, number, author, description, visibility, reason)
             print(f"Issue #{number}: validation PASSED, status/pending added, Feishu notified")
         else:
             print(f"Issue #{number}: validation PASSED (already pending)")
