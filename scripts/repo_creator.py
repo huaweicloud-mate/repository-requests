@@ -423,6 +423,21 @@ def create_labels(repo, labels):
         api("POST", f"/repos/{ORG}/{repo}/labels", "bot", {"name": name, "color": "ededed"})
 
 
+def enable_security(repo, level):
+    """开启安全告警 + 自动修复（Dependabot alerts / automated security fixes）"""
+    if level == "internal":
+        print(f"Internal repo, skip security alerts")
+        return
+
+    # Dependabot vulnerability alerts
+    api("PUT", f"/repos/{ORG}/{repo}/vulnerability-alerts", "bot")
+    print(f"[{repo}] Dependabot vulnerability alerts enabled")
+
+    # Automated security fixes (Dependabot security updates)
+    api("PUT", f"/repos/{ORG}/{repo}/automated-security-fixes", "bot")
+    print(f"[{repo}] Automated security fixes enabled")
+
+
 def validate_repo_name(name):
     return bool(re.match(r'^[a-z0-9]([a-z0-9-]*[a-z0-9])?$', name)) and len(name) <= 100
 
@@ -617,6 +632,9 @@ def main():
     # topics
     api("PUT", f"/repos/{ORG}/{repo_name}/topics", "bot",
         {"names": topics[:20]})
+
+    # security alerts + auto-fix
+    enable_security(repo_name, level)
 
     # roles
     owners = [u.strip() for u in re.split(r'[,\n]+', owner_str) if u.strip()]
