@@ -515,15 +515,22 @@ def main():
     body = issue.get("body", "")
     author = issue.get("user", {}).get("login", "")
 
+    # parse form fields (section header -> next line is value)
+    lines = body.split("\n")
     fields = {}
-    for line in body.split("\n"):
-        for prefix in ["### 仓库类型", "### 仓库名称", "### 仓库描述", "### 可见性", "### 开源许可证",
-                        "### Topics 标签", "### Owner", "### Maintainer", "### Writer", "### 申请理由"]:
+    for i, line in enumerate(lines):
+        for prefix in ["### 仓库类型", "### 仓库名称", "### 仓库描述", "### 可见性",
+                        "### 开源许可证", "### Topics 标签", "### Owner", "### Maintainer",
+                        "### Writer", "### 申请理由"]:
             if line.startswith(prefix):
                 key = prefix.replace("### ", "").strip()
-                val = line[len(prefix):].strip().lstrip("_No response_").strip()
-                if val:
-                    fields[key] = val
+                # value is on the next non-empty line
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    val = lines[j].strip()
+                    if val and not val.startswith("###") and not val.startswith("_"):
+                        fields[key] = val
+                        break
+                break
 
     repo_type = fields.get("仓库类型", "SDK")
     repo_name = fields.get("仓库名称", "").strip().lower()
