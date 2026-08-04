@@ -20,7 +20,6 @@ FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 GITCODE_API = "https://api.gitcode.com/api/v5"
 GC_HEADERS = {"PRIVATE-TOKEN": GITCODE_TOKEN, "Content-Type": "application/json"}
 
-FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 FEISHU_ADMIN_OPEN_ID = os.environ.get("FEISHU_ADMIN_OPEN_ID", "")
 
@@ -407,7 +406,11 @@ LABELS_SAMPLE = LABELS_PRODUCT[:8]
 
 
 def create_file(repo, path, content, message):
-    api("PUT", f"/repos/{ORG}/{repo}/contents/{path}", "bot", {"message": message, "content": b64(content)})
+    data = {"message": message, "content": b64(content)}
+    existing = api("GET", f"/repos/{ORG}/{repo}/contents/{path}", "bot")
+    if existing and "sha" in existing:
+        data["sha"] = existing["sha"]
+    api("PUT", f"/repos/{ORG}/{repo}/contents/{path}", "bot", data)
 
 
 def b64(s):
@@ -443,7 +446,7 @@ def assign_role(repo, role, users):
         api("PUT", f"/repos/{ORG}/{repo}/collaborators/{user}", "bot", {"permission": perm})
 
 
-def notify_feishu(repo_name, repo_type, url, author):
+def notify_feishu(repo_name, repo_type, url, author, gitcode_url=None):
     if not all([FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_ADMIN_OPEN_ID]):
         return
     try:
@@ -464,8 +467,12 @@ def notify_feishu(repo_name, repo_type, url, author):
                     {"is_short": True, "text": {"tag": "lark_md", "content": f"**仓库名称**\n{repo_name}"}},
                     {"is_short": True, "text": {"tag": "lark_md", "content": f"**类型**\n{repo_type}"}},
                 ]},
+                {"tag": "div", "fields": [
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**GitHub**\n[点击打开]({url})"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**GitCode**\n[点击打开]({gitcode_url or '创建失败'})"}},
+                ]},
                 {"tag": "action", "actions": [
-                    {"tag": "button", "text": {"tag": "plain_text", "content": "查看仓库"}, "type": "primary", "url": url},
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "查看 GitHub 仓库"}, "type": "primary", "url": url},
                 ]},
                 {"tag": "note", "elements": [{"tag": "plain_text", "content": "huaweicloud-mate Repo Creator"}]}
             ]
@@ -648,7 +655,7 @@ def main():
     api("POST", f"/repos/{ORG}/repository-requests/issues/{issue_number}/labels", "gh", {"labels": ["status/completed"]})
     api("PATCH", f"/repos/{ORG}/repository-requests/issues/{issue_number}", "gh", {"state": "closed"})
 
-    notify_feishu(repo_name, repo_type, repo_url, author)
+    notify_feishu(repo_name, repo_type, repo_url, author, gitcode_url)
 
     print("Done.")
 
