@@ -1,668 +1,417 @@
 #!/usr/bin/env python3
-"""
-huaweicloud-mate � ��仓机器人 — 按 GOAT 建仓流程文� � v1.1
-支持 9 种仓库类型 → 4 个等� ��初始化（2~14 项）
-"""
+"""Repository Creator for huaweicloud-mate - GOAT v1.1"""
 
-import json, o s, re, time
-import urllib.request, urllib.err or
+import json, os, re, base64
+import urllib.request, urllib.error
 
-ORG = os.environ.get("ORG_NAME", "huaweic loud-mate")
-BOT_TOKEN = os.environ.get("BOT_T OKEN", "")
-GITHUB_TOKEN = os.environ.get("GIT HUB_TOKEN", "")
-EVENT_PATH = os.environ.get(" GITHUB_EVENT_PATH", "")
+ORG = os.environ.get("ORG_NAME", "huaweicloud-mate")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+EVENT_PATH = os.environ.get("GITHUB_EVENT_PATH", "")
 
-GITCODE_ORG = os.env iron.get("GITCODE_ORG", "hd-vector")
-GITCODE_ USERNAME = os.environ.get("GITCODE_USERNAME",  "")
-GITCODE_TOKEN = os.environ.get("GITCODE_ TOKEN", "")
+GITCODE_ORG = os.environ.get("GITCODE_ORG", "hd-vector")
+GITCODE_USERNAME = os.environ.get("GITCODE_USERNAME", "")
+GITCODE_TOKEN = os.environ.get("GITCODE_TOKEN", "")
+GITCODE_API = os.environ.get("GITCODE_API", "https://gitcode.com/api/v5")
 
-FEISHU_APP_ID = os.environ.get(" FEISHU_APP_ID", "")
-GITCODE_API = "https://gi tcode.com/api/v5"
-GC_HEADERS = {"PRIVATE-TOKE N": GITCODE_TOKEN, "Content-Type": "applicati on/json"}
+FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
+FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
+FEISHU_ADMIN_OPEN_ID = os.environ.get("FEISHU_ADMIN_OPEN_ID", "")
 
-FEISHU_APP_ID = os.environ.get("FE ISHU_APP_ID", "")
-FEISHU_APP_SECRET = os.envi ron.get("FEISHU_APP_SECRET", "")
-FEISHU_ADMIN _OPEN_ID = os.environ.get("FEISHU_ADMIN_OPEN_ ID", "")
+GITHUB_API = "https://api.github.com"
+BOT_HDR = {"Authorization": f"Bearer {BOT_TOKEN}", "Accept": "application/vnd.github+json"}
+GH_HDR = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+GC_HDR = {"PRIVATE-TOKEN": GITCODE_TOKEN, "Content-Type": "application/json"}
 
-GITHUB_API = "https://api.github.co m"
-BOT_HEADERS = {"Authorization": f"Bearer { BOT_TOKEN}", "Accept": "application/vnd.githu b+json"}
-GH_HEADERS = {"Authorization": f"Bea rer {GITHUB_TOKEN}", "Accept": "application/v nd.github+json"}
-
-# ─── 类型→等级 映射 ───
-PRODUCT_TYPES = ["SDK", "Ter raform Provider", "GitHub Action", "框架集 成", "Exporter / Plugin", "IoT SDK"]
-SAMPLE_ TYPES = ["示例 / Lab / Sample"]
-DOCS_TYPES  = ["文档 / 数据集"]
-INTERNAL_TYPES = ["� ��部配置"]
+PRODUCT_TYPES = ["SDK", "Terraform Provider", "GitHub Action", "framework", "Exporter / Plugin", "IoT SDK"]
+SAMPLE_TYPES = ["sample"]
+DOCS_TYPES = ["docs"]
+INTERNAL_TYPES = ["internal"]
 
 
-def api(method, path, token=N one, data=None):
-    headers = BOT_HEADERS if  token == "bot" else GH_HEADERS
-    url = f"{ GITHUB_API}{path}"
-    body = json.dumps(data ).encode() if data else None
-    req = urllib .request.Request(url, data=body, headers=head ers, method=method)
+def api(method, path, auth="bot", data=None):
+    headers = BOT_HDR if auth == "bot" else GH_HDR
+    url = f"{GITHUB_API}{path}"
+    body = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with url lib.request.urlopen(req, timeout=30) as resp: 
-            if resp.status == 204:
-                 return None
-            return json.lo ads(resp.read())
-    except urllib.error.HTTP Error as e:
-        err = e.read().decode()[: 500]
-        print(f"API {method} {path}: {e. code} {err}")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return None if resp.status == 204 else json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        err = e.read().decode()[:300]
+        print(f"GH API {method} {path}: {e.code} {err}")
         return None
 
 
-def load_ event():
+def gc_api(method, path, data=None):
+    if not GITCODE_TOKEN:
+        return None
+    url = f"{GITCODE_API}{path}"
+    body = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(url, data=body, headers=GC_HDR, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return None if resp.status == 204 else json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        err = e.read().decode()[:300]
+        print(f"GC API {method} {path}: {e.code} {err}")
+        return None
+
+
+def load_event():
     with open(EVENT_PATH) as f:
-         return json.load(f)
+        return json.load(f)
 
 
-def gitcode_api(met hod, path, data=None):
-    """调用 GitCode  API（GitLab 兼容）"""
-    if not GITCODE_ TOKEN:
-        print("GITCODE_TOKEN not set,  skipping GitCode API")
-        return None
-     url = f"{GITCODE_API}{path}"
-    body = jso n.dumps(data).encode() if data else None
-     req = urllib.request.Request(url, data=body,  headers=GC_HEADERS, method=method)
-    try:
-         with urllib.request.urlopen(req, timeo ut=30) as resp:
-            if resp.status ==  204:
-                return None
-             return json.loads(resp.read())
-    except ur llib.error.HTTPError as e:
-        err = e.re ad().decode()[:500]
-        print(f"GitCode A PI {method} {path}: {e.code} {err}")
-         return None
+def b64(s):
+    return base64.b64encode(s.encode()).decode()
 
 
-def create_gitcode_repo(repo_na me, description):
-    """在 GitCode 上创� �同名仓库"""
-    # 获取 hd-vector group  的 ID
-    group_url = f"/groups/{GITCODE_OR G}"
-    group = gitcode_api("GET", group_url) 
-    if not group or "id" not in group:
-         print(f"Failed to get GitCode group {GITCO DE_ORG}")
-        return None
-
-    namespace_ id = group["id"]
-    data = {
-        "name":  repo_name,
-        "path": repo_name,
-         "namespace_id": namespace_id,
-        "desc ription": description or "",
-        "visibil ity": "public",
-        "initialize_with_read me": False,
-    }
-    result = gitcode_api("P OST", "/projects", data)
-    if result and "i d" in result:
-        gitcode_url = result.ge t("web_url", f"https://gitcode.com/{GITCODE_O RG}/{repo_name}")
-        print(f"GitCode rep o created: {gitcode_url}")
-        return git code_url
-    print(f"Failed to create GitCode  repo")
-    return None
+def put_file(repo, path, content, msg):
+    api("PUT", f"/repos/{ORG}/{repo}/contents/{path}", "bot", {"message": msg, "content": b64(content)})
 
 
-# ─── 许可� ��策略 ───
-def get_license(repo_type,  user_choice):
-    if repo_type in PRODUCT_TY PES:
-        choice_map = {"Apache-2.0（推� ��）": "Apache-2.0", "Apache-2.0": "Apache-2 .0", "MIT": "MIT", "BSD-3-Clause": "BSD-3-Cla use"}
-        return choice_map.get(user_choi ce, "Apache-2.0")
+def add_labels(repo, labels):
+    for name in labels:
+        api("POST", f"/repos/{ORG}/{repo}/labels", "bot", {"name": name, "color": "ededed"})
+
+
+def set_role(repo, role, users):
+    role_map = {"owner": "admin", "maintainer": "maintain", "writer": "push"}
+    for user in users:
+        api("PUT", f"/repos/{ORG}/{repo}/collaborators/{user}", "bot", {"permission": role_map.get(role, "push")})
+
+
+def validate_name(name):
+    return bool(re.match(r'^[a-z0-9]([a-z0-9-]*[a-z0-9])?$', name)) and len(name) <= 100
+
+
+def validate_topics(raw):
+    topics = re.split(r'[,\n]+', raw.strip())
+    return [t.strip().lower() for t in topics if re.match(r'^[a-z0-9][a-z0-9.-]*$', t.strip())]
+
+
+def get_license(repo_type, user_choice):
+    if repo_type in PRODUCT_TYPES:
+        return {"Apache-2.0": "Apache-2.0", "MIT": "MIT", "BSD-3-Clause": "BSD-3-Clause"}.get(user_choice, "Apache-2.0")
     return "Apache-2.0"
 
 
-#  ─── README 模板（9套） ───
- README_TEMPLATES = {
-    "SDK": """# {name}
-[ ![License](https://img.shields.io/badge/Licen se-{license}-blue.svg)](LICENSE)
+def get_readme(name, repo_type, license_name, desc):
+    tmpl = """# {name}
 
-{descriptio n}
+{desc}
 
-## 安装
+## Quick Start
+
 ```bash
-pip install {name}
-```
- 
-## API 参考
-待补充
-
-## 贡献
-查看 [C ONTRIBUTING.md](CONTRIBUTING.md)
-
-## 许可� �
-本项目使用 {license} 许可证。
-""", 
-    "Terraform Provider": """# {name}
-[![Lic ense](https://img.shields.io/badge/License-{l icense}-blue.svg)](LICENSE)
-
-{description}
-
-# # Provider 配置
-```hcl
-provider "{name}" {{ 
-  # 配置项
-}}
+# TBD
 ```
 
-## Resource / DataSour ce 列表
-待补充
+## License
 
-## 贡献
-查看 [CONTRI BUTING.md](CONTRIBUTING.md)
-""",
-    "GitHub  Action": """# {name}
-[![License](https://img. shields.io/badge/License-{license}-blue.svg)] (LICENSE)
-
-{description}
-
-## Inputs
-| 参数  | 类型 | 必需 | 默认值 | 说明 |
-|--- ---|------|------|--------|------|
-
-## Output s
-| 输出 | 说明 |
-|------|------|
-
-## 使 用示例
-```yaml
-- uses: huaweicloud-mate/{n ame}@v1
-  with:
-    param: value
-```
-
-## 贡� ��
-查看 [CONTRIBUTING.md](CONTRIBUTING.md)
- """,
-    "框架集成": """# {name}
-[![Licen se](https://img.shields.io/badge/License-{lic ense}-blue.svg)](LICENSE)
-
-{description}
-
-##  快速集成
-```bash
-pip install {name}
-```
-
- ## 配置说明
-待补充
-
-## 版本兼容
-|  版本 | 兼容语言 / 框架 | 状态 |
-|-- ----|----------------|------|
-
-## 贡献
-查� �� [CONTRIBUTING.md](CONTRIBUTING.md)
-""",
-     "Exporter / Plugin": """# {name}
-[![License ](https://img.shields.io/badge/License-{licen se}-blue.svg)](LICENSE)
-
-{description}
-
-## � �署方式
-```bash
-docker run -d --name {name } huaweicloud-mate/{name}:latest
-```
-
-## 指� ��说明
-待补充
-
-## 贡献
-查看 [CONTRIB UTING.md](CONTRIBUTING.md)
-""",
-    "IoT SDK" : """# {name}
-[![License](https://img.shields .io/badge/License-{license}-blue.svg)](LICENS E)
-
-{description}
-
-## 硬件要求
-待补充
- 
-## 设备接入示例
-```python
-from {name}  import Device
-device = Device("device-id")
-de vice.connect()
-```
-
-## 贡献
-查看 [CONTRIB UTING.md](CONTRIBUTING.md)
-""",
-    "示例 /  Lab / Sample": """# {name}
-
-{description}
-
-# # 前置条件
-- 语言环境
-- 依赖安装
- 
-## 运行步骤
-```bash
-# 运行示例
-```
-
- ## 效果展示
-待补充
-""",
-    "文档 /  数据集": """# {name}
-
-{description}
-
-## � �容说明
-待补充
-
-## 使用方式
-待补� ��
-""",
-    "内部配置": """# {name}
-
-{des cription}
-
-> 内部配置仓库
-
-## 用途
-� �补充
-
-## 使用方式
-待补充
-""",
-}
+{license}
+"""
+    return tmpl.format(name=name, desc=desc, license=license_name)
 
 
-d ef make_readme(name, repo_type, license_name,  description):
-    tmpl = README_TEMPLATES.ge t(repo_type, README_TEMPLATES["SDK"])
-    ret urn tmpl.format(name=name, license=license_na me, description=description)
+CONTRIBUTING = """# Contributing
 
+See README for setup.
 
-# ─── � �件模板 ───
-CONTRIBUTING_MD = """# C ontributing to {name}
+## Commit Convention
 
-## 开发环境搭建
- 见 README。
+feat: / fix: / docs: / style: / refactor: / test: / chore:
 
-## 提交规范
-使用约定� �提交：`feat:`, `fix:`, `docs:`, `style:`,  `refactor:`, `test:`, `chore:`
+## PR Process
 
-## PR 流程 
-1. Fork 仓库
-2. 创建分支 `feat/xxx`
-3.  提交代码
-4. 发起 Pull Request
-5. 至� � 2 人 Review + CI 通过后合并
-
-## Issue  规范
-使用 Bug Report / Feature Request � ��板
+1. Fork and create branch
+2. Commit changes
+3. Open Pull Request
+4. At least 2 approvals + CI pass required
 """
 
-SECURITY_MD = """# Security Policy 
+SECURITY = """# Security Policy
 
-## 报告安全漏洞
-如发现安全漏洞 ，请发送邮件至 security@huaweicloud-ma te.dev，**不要在公开 Issue 中披露**� ��
+Report vulnerabilities to security@huaweicloud-mate.dev.
 
-## 支持版本
-| 版本 | 支持状态 | 
-|------|---------|
-| 最新 | ✅ 活跃支� �� |
+Do NOT disclose in public issues.
 """
 
-COC_MD = """# Contributor Covenant  Code of Conduct
+COC = """# Code of Conduct
 
-## 我们的承诺
-为了营 造一个开放和友好的环境，我们承 诺尊重所有参与者。
-
-## 我们的标� ��
-- 使用友好和包容的语言
-- 尊重� ��同的观点和经验
-- 建设性地接受� ��评
-
-## 执行
-违规行为可报告至项� ��维护者。
+See organization-level CODE_OF_CONDUCT.md
 """
 
-BUG_REPORT_YML = """name:  Bug Report
-description: 报告一个 bug
-lab els: ["type/bug"]
+BUG_YML = """name: Bug Report
+description: Report a bug
+labels: ["type/bug"]
 body:
   - type: textarea
-     attributes:
-      label: 描述
-      descr iption: 发生了什么
-    validations:
-       required: true
-  - type: textarea
-    attri butes:
-      label: 复现步骤
-  - type: te xtarea
     attributes:
-      label: 期望行 为
-  - type: textarea
-    attributes:
-       label: 环境信息
-"""
-
-FEATURE_YML = """nam e: Feature Request
-description: 请求一个� ��功能
-labels: ["type/feature"]
-body:
-  - t ype: textarea
-    attributes:
-      label: � �述
-      description: 你希望添加什么 功能
+      label: Description
     validations:
       required: true
-   - type: textarea
+"""
+
+FEATURE_YML = """name: Feature Request
+description: Request a feature
+labels: ["type/feature"]
+body:
+  - type: textarea
     attributes:
-      labe l: 使用场景
+      label: Description
+    validations:
+      required: true
 """
 
-CONFIG_YML = """blank_is sues_enabled: false
-"""
+CONFIG_YML = "blank_issues_enabled: false\n"
 
-PR_TEMPLATE = """##  变更说明
+PR_TEMPLATE = """## Summary
 
-
-## 关联 Issue
+## Related Issue
 Fixes #
 
-## � �试
-- [ ] 单元测试通过
-- [ ] 手动测 试通过
+## Checklist
+- [ ] CI passed
+- [ ] Reviewed
 """
 
-TRIAGE_WORKFLOW = """name: Iss ue Triage
+TRIAGE_WF = """name: Issue Triage
 on:
   issues:
     types: [opened]
-p ermissions:
+permissions:
   issues: write
   contents: read
- jobs:
+jobs:
   triage:
     runs-on: ubuntu-latest
-     steps:
-      - uses: huaweicloud-mate/.gith ub/actions/issue-bot@main
+    steps:
+      - uses: huaweicloud-mate/.github/actions/issue-bot@main
         env:
-           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 """
 
-SYNC_WORKFLOW = f"""name: Sync to GitCo de
+SYNC_WF = """name: Sync to GitCode
 on:
   push:
     branches: [main]
-permissio ns:
-  contents: read
 jobs:
   sync:
-    runs-o n: ubuntu-latest
+    runs-on: ubuntu-latest
     steps:
-      - uses: act ions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetc h-depth: 0
+          fetch-depth: 0
       - run: |
-          git remot e add gitcode https://{GITCODE_USERNAME}:${{{ { secrets.GITCODE_TOKEN }}}}@gitcode.com/{GIT CODE_ORG}/${{{{ github.event.repository.name  }}}}.git || true
-          git push gitcode m ain --force
-"""
+          git remote add gitcode https://GITCODE_USER_PLACEHOLDER:${{ secrets.GITCODE_TOKEN }}@gitcode.com/GITCODE_ORG_PLACEHOLDER/${{ github.event.repository.name }}.git 2>/dev/null || true
+          git push gitcode main --force
+""".replace("GITCODE_USER_PLACEHOLDER", GITCODE_USERNAME).replace("GITCODE_ORG_PLACEHOLDER", GITCODE_ORG)
 
 DEPENDABOT = """version: 2
-u pdates:
-  - package-ecosystem: "github-action s"
+updates:
+  - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      int erval: "weekly"
+      interval: "weekly"
 """
 
-LABELS_PRODUCT = ["type/ bug", "type/enhancement", "type/question", "t ype/documentation",
-                  "priori ty/critical", "priority/high", "priority/medi um", "priority/low",
-                  "statu s/pending", "status/in-progress", "status/blo cked",
-                  "good first issue",  "help wanted", "agent/triaged"]
-LABELS_SAMPLE  = LABELS_PRODUCT[:8]
+LABELS_14 = ["type/bug", "type/enhancement", "type/question", "type/documentation",
+             "priority/critical", "priority/high", "priority/medium", "priority/low",
+             "status/pending", "status/in-progress", "status/blocked",
+             "good first issue", "help wanted", "agent/triaged"]
+
+LABELS_8 = LABELS_14[:8]
 
 
-def create_file(repo,  path, content, message):
-    api("PUT", f"/r epos/{ORG}/{repo}/contents/{path}", "bot", {" message": message, "content": b64(content)})
- 
-
-def b64(s):
-    import base64
-    return ba se64.b64encode(s.encode()).decode()
+def get_level(repo_type):
+    if repo_type in PRODUCT_TYPES: return "product", 14
+    if repo_type in SAMPLE_TYPES: return "sample", 7
+    if repo_type in DOCS_TYPES: return "docs", 3
+    return "internal", 2
 
 
-def cre ate_labels(repo, labels):
-    for name in lab els:
-        api("POST", f"/repos/{ORG}/{repo }/labels", "bot", {"name": name, "color": "ed eded"})
+def create_gitcode_repo(repo_name, desc):
+    group = gc_api("GET", f"/groups/{GITCODE_ORG}")
+    if not group or "id" not in group:
+        print(f"Failed to get GitCode group {GITCODE_ORG}")
+        return None
+    result = gc_api("POST", "/projects", {
+        "name": repo_name, "path": repo_name, "namespace_id": group["id"],
+        "description": desc or "", "visibility": "public", "initialize_with_readme": False
+    })
+    if result and "id" in result:
+        url = result.get("web_url", f"https://gitcode.com/{GITCODE_ORG}/{repo_name}")
+        print(f"GitCode repo created: {url}")
+        return url
+    return None
 
 
-def validate_repo_name(name):
-    r eturn bool(re.match(r'^[a-z0-9]([a-z0-9-]*[a- z0-9])?$', name)) and len(name) <= 100
-
-
-def  validate_topics(topics_str):
-    topics = re. split(r'[,\n]+', topics_str.strip())
-    vali d = []
-    for t in topics:
-        t = t.str ip().lower()
-        if re.match(r'^[a-z0-9][ a-z0-9.-]*$', t):
-            valid.append(t) 
-    return valid
-
-
-def assign_role(repo, rol e, users):
-    if not users:
-        return
-     role_map = {"owner": "admin", "maintainer" : "maintain", "writer": "push"}
-    perm = ro le_map.get(role, "push")
-    for user in user s:
-        api("PUT", f"/repos/{ORG}/{repo}/c ollaborators/{user}", "bot", {"permission": p erm})
-
-
-def notify_feishu(repo_name, repo_typ e, url, author):
-    if not all([FEISHU_APP_I D, FEISHU_APP_SECRET, FEISHU_ADMIN_OPEN_ID]): 
+def notify_feishu(repo_name, repo_type, url):
+    if not all([FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_ADMIN_OPEN_ID]):
         return
     try:
-        token_resp =  json.loads(urllib.request.urlopen(
-             urllib.request.Request("https://open.feish u.cn/open-apis/auth/v3/tenant_access_token/in ternal",
-                                   d ata=json.dumps({"app_id": FEISHU_APP_ID, "app _secret": FEISHU_APP_SECRET}).encode(),
-                                    headers={"Conte nt-Type": "application/json"}), timeout=10).r ead())
-        token = token_resp.get("tenant _access_token", "")
+        data = json.dumps({"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}).encode()
+        req = urllib.request.Request("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                                     data=data, headers={"Content-Type": "application/json"})
+        token = json.loads(urllib.request.urlopen(req, timeout=10).read()).get("tenant_access_token", "")
         if not token:
-             return
-
-        card = {
-             "config": {"wide_screen_mode": True},
-             "header": {"title": {"tag": "plain_text ", "content": "  仓库创建成功"}, "templ ate": "turquoise"},
-            "elements": [ 
-                {"tag": "markdown", "content ": f"**{author}** 申请的仓库已创建"}, 
-                {"tag": "div", "fields": [
-                     {"is_short": True, "text":  {"tag": "lark_md", "content": f"**仓库名� ��**\n{repo_name}"}},
-                    {"i s_short": True, "text": {"tag": "lark_md", "c ontent": f"**类型**\n{repo_type}"}},
-                 ]},
-                {"tag": "action ", "actions": [
-                    {"tag": " button", "text": {"tag": "plain_text", "conte nt": "查看仓库"}, "type": "primary", "url ": url},
-                ]},
-                 {"tag": "note", "elements": [{"tag": "plain_t ext", "content": "huaweicloud-mate Repo Creat or"}]}
-            ]
-        }
-        urllib .request.urlopen(urllib.request.Request(
-             f"https://open.feishu.cn/open-apis/im /v1/messages?receive_id_type=open_id",
-             data=json.dumps({"receive_id": FEISHU_A DMIN_OPEN_ID, "msg_type": "interactive",
-                              "content": json.dump s(card, ensure_ascii=False)}).encode(),
-             headers={"Authorization": f"Bearer {to ken}", "Content-Type": "application/json"}),  timeout=10)
-        print("Feishu notificatio n sent")
+            return
+        card = {"config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": "Repo Created"}, "template": "turquoise"},
+                "elements": [{"tag": "markdown", "content": f"**{repo_name}** ({repo_type})\n{url}"}]}
+        urllib.request.urlopen(urllib.request.Request(
+            f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
+            data=json.dumps({"receive_id": FEISHU_ADMIN_OPEN_ID, "msg_type": "interactive",
+                             "content": json.dumps(card, ensure_ascii=False)}).encode(),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}), timeout=10)
+        print("Feishu notification sent")
     except Exception as e:
-        p rint(f"Feishu notification failed: {e}")
-
-
-de f get_init_level(repo_type):
-    if repo_type  in PRODUCT_TYPES:
-        return "product"
-     elif repo_type in SAMPLE_TYPES:
-        re turn "sample"
-    elif repo_type in DOCS_TYPE S:
-        return "docs"
-    else:
-        re turn "internal"
+        print(f"Feishu: {e}")
 
 
 def main():
-    event = loa d_event()
+    event = load_event()
     issue = event.get("issue", {})
-     issue_number = issue.get("number", 0)
-     labels = [l["name"] for l in issue.get("labe ls", [])]
-    title = issue.get("title", "")
- 
-    if "status/approved" not in labels:
-         print("Not approved, skipping")
-        r eturn
-
+    num = issue.get("number", 0)
+    labels = [l["name"] for l in issue.get("labels", [])]
     body = issue.get("body", "")
-    a uthor = issue.get("user", {}).get("login", "" )
+    author = issue.get("user", {}).get("login", "")
 
-    # parse form fields (section header ->  next line is value)
-    lines = body.split(" \n")
+    if "status/approved" not in labels:
+        print("Not approved, skip")
+        return
+
+    print(f"Processing #{num}: {issue.get('title','')}")
+
+    # Parse fields
+    lines = body.split("\n")
     fields = {}
-    for i, line in enume rate(lines):
-        for prefix in ["### 仓� ��类型", "### 仓库名称", "### 仓库描 述", "### 可见性",
-                         "### 开源许可证", "### Topics 标签",  "### Owner", "### Maintainer",
-                         "### Writer", "### 申请理由"]: 
+    for i, line in enumerate(lines):
+        for prefix in ["### Repo Type", "### Repo Name", "### Description", "### Visibility",
+                        "### License", "### Topics", "### Owner", "### Maintainer", "### Writer",
+                        "### Reason"]:
             if line.startswith(prefix):
-                 key = prefix.replace("### ", ""). strip()
-                # value is on the nex t non-empty line
-                for j in ran ge(i + 1, min(i + 3, len(lines))):
-                     val = lines[j].strip()
-                     if val and not val.startswith("###")  and not val.startswith("_"):
-                         fields[key] = val
-                         break
+                key = prefix.replace("### ", "").lower().replace(" ", "_")
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    v = lines[j].strip().lstrip("_No response_").strip()
+                    if v and not v.startswith("###") and not v.startswith("_"):
+                        fields[key] = v
+                        break
                 break
 
-    repo_ty pe = fields.get("仓库类型", "SDK")
-    re po_name = fields.get("仓库名称", "").stri p().lower()
-    description = fields.get("仓 库描述", "")
-    visibility = fields.get(" 可见性", "public").lower()
-    license_cho ice = fields.get("开源许可证", "Apache-2 .0")
-    topics_raw = fields.get("Topics 标� ��", "")
-    owner_str = fields.get("Owner",  "")
-    maintainer_str = fields.get("Maintain er", "")
-    writer_str = fields.get("Writer" , "")
-    justification = fields.get("申请� ��由", "")
+    repo_type = fields.get("repo_type", "SDK")
+    repo_name = fields.get("repo_name", "").strip().lower()
+    desc = fields.get("description", "")
+    visibility = fields.get("visibility", "public").lower()
+    license_choice = fields.get("license", "Apache-2.0")
+    topics_raw = fields.get("topics", "")
+    owners_str = fields.get("owner", "")
+    maint_str = fields.get("maintainer", "")
+    writer_str = fields.get("writer", "")
+    justification = fields.get("reason", "")
 
-    print(f"Processing Issue #{i ssue_number}: {title}")
-    print(f"Type: {re po_type}, Name: {repo_name}")
+    print(f"Type: {repo_type}, Name: {repo_name}")
 
-    if not val idate_repo_name(repo_name):
-        api("POST ", f"/repos/{ORG}/repository-requests/issues/ {issue_number}/comments", "gh",
-            { "body": f"  **仓库名称格式错误**：`{ repo_name}` 不符合规范（小写字母+� �字+连字符，≤100字符）"})
-        r eturn
+    if not validate_name(repo_name):
+        api("POST", f"/repos/{ORG}/repository-requests/issues/{num}/comments", "gh",
+            {"body": f"Invalid repo name: `{repo_name}`"})
+        return
 
-    topics = validate_topics(topics_ra w)
+    topics = validate_topics(topics_raw)
     if len(topics) < 3:
-        api("POST" , f"/repos/{ORG}/repository-requests/issues/{ issue_number}/comments", "gh",
-            {" body": f"  **Topics 不足**：至少需要 3  个合法标签（当前 {len(topics)} 个� �"})
+        api("POST", f"/repos/{ORG}/repository-requests/issues/{num}/comments", "gh",
+            {"body": f"Need >=3 valid topics, got {len(topics)}"})
         return
 
-    # check duplicate
-     existing = api("GET", f"/repos/{ORG}/{repo_ name}", "bot")
-    if existing and "id" in ex isting:
-        api("POST", f"/repos/{ORG}/re pository-requests/issues/{issue_number}/comme nts", "gh",
-            {"body": f"  **仓库 已存在**：`{ORG}/{repo_name}` 已存在"} )
+    existing = api("GET", f"/repos/{ORG}/{repo_name}", "bot")
+    if existing and "id" in existing:
+        api("POST", f"/repos/{ORG}/repository-requests/issues/{num}/comments", "gh",
+            {"body": f"Repo already exists: `{ORG}/{repo_name}`"})
         return
 
-    license_name = get_lice nse(repo_type, license_choice)
-    level = ge t_init_level(repo_type)
+    license_name = get_license(repo_type, license_choice)
+    level, init_count = get_level(repo_type)
 
-    # create repo
-     create_data = {
-        "name": repo_name,
-         "description": description,
-        " private": visibility == "private",
-        "a uto_init": True,
-        "has_issues": True,
-         "has_projects": False,
-        "has_w iki": False,
-        "allow_squash_merge": Tr ue,
-        "allow_merge_commit": False,
-         "allow_rebase_merge": False,
+    create_data = {
+        "name": repo_name, "description": desc, "private": visibility == "private",
+        "auto_init": True, "has_issues": True, "has_projects": False, "has_wiki": False,
+        "allow_squash_merge": True, "allow_merge_commit": False, "allow_rebase_merge": False,
     }
-    re sult = api("POST", f"/orgs/{ORG}/repos", "bot ", create_data)
-    if not result or "id" not  in result:
-        print(f"Failed to create  repo: {result}")
+    result = api("POST", f"/orgs/{ORG}/repos", "bot", create_data)
+    if not result or "id" not in result:
+        print(f"Failed to create repo: {result}")
         return
 
-    repo_url  = result["html_url"]
-    print(f"Repo create d: {repo_url}")
+    repo_url = result["html_url"]
+    print(f"GitHub repo created: {repo_url}")
 
-    # init files
-    readme  = make_readme(repo_name, repo_type, license_n ame, description)
-    create_file(repo_name,  "README.md", readme, "Init README")
-    creat e_file(repo_name, "LICENSE", f"{license_name}  License\n", f"Add {license_name} license")
+    # Initialize files
+    readme = get_readme(repo_name, repo_type, license_name, desc)
+    put_file(repo_name, "README.md", readme, "Init README")
+    put_file(repo_name, "LICENSE", f"{license_name} License", f"Add {license_name} license")
 
-     if level in ("product", "sample"):
-         create_file(repo_name, "CONTRIBUTING.md", C ONTRIBUTING_MD.format(name=repo_name), "Add c ontributing guide")
-    if level == "product" :
-        create_file(repo_name, "SECURITY.md ", SECURITY_MD, "Add security policy")
-         create_file(repo_name, "CODE_OF_CONDUCT.md" , COC_MD, "Add code of conduct")
-    if level  in ("product", "sample"):
-        create_fil e(repo_name, ".github/ISSUE_TEMPLATE/bug_repo rt.yml", BUG_REPORT_YML, "Add bug template")
-         create_file(repo_name, ".github/ISSUE _TEMPLATE/feature_request.yml", FEATURE_YML,  "Add feature template")
-        create_file(r epo_name, ".github/ISSUE_TEMPLATE/config.yml" , CONFIG_YML, "Add issue config")
-        cre ate_file(repo_name, ".github/PULL_REQUEST_TEM PLATE.md", PR_TEMPLATE, "Add PR template")
-     if level == "product":
-        create_file( repo_name, ".github/dependabot.yml", DEPENDAB OT, "Add dependabot config")
-        create_f ile(repo_name, ".github/workflows/triage-issu e.yml", TRIAGE_WORKFLOW, "Add triage workflow ")
-        create_file(repo_name, ".github/wo rkflows/sync-to-gitcode.yml", SYNC_WORKFLOW,  "Add GitCode sync workflow")
+    if level in ("product", "sample"):
+        put_file(repo_name, "CONTRIBUTING.md", CONTRIBUTING, "Add CONTRIBUTING")
+    if level == "product":
+        put_file(repo_name, "SECURITY.md", SECURITY, "Add SECURITY")
+        put_file(repo_name, "CODE_OF_CONDUCT.md", COC, "Add CODE_OF_CONDUCT")
+    if level in ("product", "sample"):
+        put_file(repo_name, ".github/ISSUE_TEMPLATE/bug_report.yml", BUG_YML, "Add bug template")
+        put_file(repo_name, ".github/ISSUE_TEMPLATE/feature_request.yml", FEATURE_YML, "Add feature template")
+        put_file(repo_name, ".github/ISSUE_TEMPLATE/config.yml", CONFIG_YML, "Add issue config")
+        put_file(repo_name, ".github/PULL_REQUEST_TEMPLATE.md", PR_TEMPLATE, "Add PR template")
+    if level == "product":
+        put_file(repo_name, ".github/dependabot.yml", DEPENDABOT, "Add dependabot")
+        put_file(repo_name, ".github/workflows/triage-issue.yml", TRIAGE_WF, "Add triage workflow")
+        put_file(repo_name, ".github/workflows/sync-to-gitcode.yml", SYNC_WF, "Add GitCode sync")
 
-    # labels
-     if level == "product":
-        create_label s(repo_name, LABELS_PRODUCT)
-    elif level = = "sample":
-        create_labels(repo_name,  LABELS_SAMPLE)
+    # Labels
+    if level == "product":
+        add_labels(repo_name, LABELS_14)
+    elif level == "sample":
+        add_labels(repo_name, LABELS_8)
 
-    # topics
-    api("PUT", f "/repos/{ORG}/{repo_name}/topics", "bot",
-         {"names": topics[:20]})
+    # Topics
+    api("PUT", f"/repos/{ORG}/{repo_name}/topics", "bot", {"names": topics[:20]})
 
-    # roles
-     owners = [u.strip() for u in re.split(r'[,\n ]+', owner_str) if u.strip()]
-    maintainers  = [u.strip() for u in re.split(r'[,\n]+', ma intainer_str) if u.strip()]
-    writers = [u. strip() for u in re.split(r'[,\n]+', writer_s tr) if u.strip()]
+    # Roles
+    owners = [u.strip() for u in re.split(r'[,\n]+', owners_str) if u.strip()]
+    maintainers = [u.strip() for u in re.split(r'[,\n]+', maint_str) if u.strip()]
+    writers = [u.strip() for u in re.split(r'[,\n]+', writer_str) if u.strip()]
 
     for u in owners:
-         assign_role(repo_name, "owner", [u])
-    f or u in maintainers:
-        if u not in owne rs:
-            assign_role(repo_name, "maint ainer", [u])
+        set_role(repo_name, "owner", [u])
+    for u in maintainers:
+        if u not in owners:
+            set_role(repo_name, "maintainer", [u])
     for u in writers:
-        if  u not in owners and u not in maintainers:
-             assign_role(repo_name, "writer", [u ])
+        if u not in owners and u not in maintainers:
+            set_role(repo_name, "writer", [u])
 
-    # create GitCode mirror
-    gitcode_u rl = create_gitcode_repo(repo_name, descripti on)
+    # GitCode sync
+    gc_url = create_gitcode_repo(repo_name, desc)
 
-    # close issue
-    init_count = {"pro duct": 14, "sample": 7, "docs": 3, "internal" : 2}[level]
+    # Close issue
     lines = [
-        f"##  建� �完成",
+        f"## Repo Created",
         f"",
-        f"| 项目 | � ��情 |",
-        f"|------|------|",
-         f"| GitHub | [{ORG}/{repo_name}]({repo_url})  |",
+        f"| Item | Detail |",
+        f"|------|--------|",
+        f"| GitHub | [{ORG}/{repo_name}]({repo_url}) |",
     ]
-    if gitcode_url:
-        lines. append(f"| GitCode | [{GITCODE_ORG}/{repo_nam e}]({gitcode_url}) |")
-    lines += [
-         f"| 类型 | {repo_type}（{level} 级） |" ,
-        f"| 许可证 | {license_name} |",
-         f"| 初始化 | {init_count} 项 |",
-         f"| 可见性 | {visibility} |",
-     ]
-    comment = "\n".join(lines)
+    if gc_url:
+        lines.append(f"| GitCode | [{GITCODE_ORG}/{repo_name}]({gc_url}) |")
+    lines += [f"| Type | {repo_type} ({level}) |", f"| License | {license_name} |",
+              f"| Init | {init_count} items |", f"| Visibility | {visibility} |"]
+    api("POST", f"/repos/{ORG}/repository-requests/issues/{num}/comments", "gh", {"body": "\n".join(lines)})
+    api("POST", f"/repos/{ORG}/repository-requests/issues/{num}/labels", "gh", {"labels": ["status/completed"]})
+    api("PATCH", f"/repos/{ORG}/repository-requests/issues/{num}", "gh", {"state": "closed"})
 
-    api("PO ST", f"/repos/{ORG}/repository-requests/issue s/{issue_number}/comments", "gh", {"body": co mment})
-    api("POST", f"/repos/{ORG}/reposi tory-requests/issues/{issue_number}/labels",  "gh", {"labels": ["status/completed"]})
-    a pi("PATCH", f"/repos/{ORG}/repository-request s/issues/{issue_number}", "gh", {"state": "cl osed"})
-
-    notify_feishu(repo_name, repo_ty pe, repo_url, author)
-
+    notify_feishu(repo_name, repo_type, repo_url)
     print("Done.")
 
 
-i f __name__ == "__main__":
+if __name__ == "__main__":
     main()
- 
