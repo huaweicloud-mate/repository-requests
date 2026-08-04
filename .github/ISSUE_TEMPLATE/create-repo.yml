@@ -1,6 +1,5 @@
 name: " 新建仓库申请"
 description: "申请在 huaweicloud-mate 组织下创建新仓库"
-labels: ["status/pending"]
 body:
   - type: markdown
     attributes:
