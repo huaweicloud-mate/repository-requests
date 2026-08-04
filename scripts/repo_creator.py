@@ -17,6 +17,10 @@ GITCODE_USERNAME = os.environ.get("GITCODE_USERNAME", "")
 GITCODE_TOKEN = os.environ.get("GITCODE_TOKEN", "")
 
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
+GITCODE_API = "https://gitcode.com/api/v4"
+GC_HEADERS = {"PRIVATE-TOKEN": GITCODE_TOKEN, "Content-Type": "application/json"}
+
+FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 FEISHU_ADMIN_OPEN_ID = os.environ.get("FEISHU_ADMIN_OPEN_ID", "")
 
@@ -50,6 +54,52 @@ def api(method, path, token=None, data=None):
 def load_event():
     with open(EVENT_PATH) as f:
         return json.load(f)
+
+
+def gitcode_api(method, path, data=None):
+    """调用 GitCode API（GitLab 兼容）"""
+    if not GITCODE_TOKEN:
+        print("GITCODE_TOKEN not set, skipping GitCode API")
+        return None
+    url = f"{GITCODE_API}{path}"
+    body = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(url, data=body, headers=GC_HEADERS, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            if resp.status == 204:
+                return None
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        err = e.read().decode()[:500]
+        print(f"GitCode API {method} {path}: {e.code} {err}")
+        return None
+
+
+def create_gitcode_repo(repo_name, description):
+    """在 GitCode 上创建同名仓库"""
+    # 获取 hd-vector group 的 ID
+    group_url = f"/groups/{GITCODE_ORG}"
+    group = gitcode_api("GET", group_url)
+    if not group or "id" not in group:
+        print(f"Failed to get GitCode group {GITCODE_ORG}")
+        return None
+
+    namespace_id = group["id"]
+    data = {
+        "name": repo_name,
+        "path": repo_name,
+        "namespace_id": namespace_id,
+        "description": description or "",
+        "visibility": "public",
+        "initialize_with_readme": False,
+    }
+    result = gitcode_api("POST", "/projects", data)
+    if result and "id" in result:
+        gitcode_url = result.get("web_url", f"https://gitcode.com/{GITCODE_ORG}/{repo_name}")
+        print(f"GitCode repo created: {gitcode_url}")
+        return gitcode_url
+    print(f"Failed to create GitCode repo")
+    return None
 
 
 # ─── 许可证策略 ───
@@ -575,17 +625,27 @@ def main():
         if u not in owners and u not in maintainers:
             assign_role(repo_name, "writer", [u])
 
+    # create GitCode mirror
+    gitcode_url = create_gitcode_repo(repo_name, description)
+
     # close issue
     init_count = {"product": 14, "sample": 7, "docs": 3, "internal": 2}[level]
-    comment = f"""##  建仓完成
-
-| 项目 | 详情 |
-|------|------|
-| 仓库 | [{ORG}/{repo_name}]({repo_url}) |
-| 类型 | {repo_type}（{level} 级） |
-| 许可证 | {license_name} |
-| 初始化 | {init_count} 项 |
-| 可见性 | {visibility} |"""
+    lines = [
+        f"##  建仓完成",
+        f"",
+        f"| 项目 | 详情 |",
+        f"|------|------|",
+        f"| GitHub | [{ORG}/{repo_name}]({repo_url}) |",
+    ]
+    if gitcode_url:
+        lines.append(f"| GitCode | [{GITCODE_ORG}/{repo_name}]({gitcode_url}) |")
+    lines += [
+        f"| 类型 | {repo_type}（{level} 级） |",
+        f"| 许可证 | {license_name} |",
+        f"| 初始化 | {init_count} 项 |",
+        f"| 可见性 | {visibility} |",
+    ]
+    comment = "\n".join(lines)
 
     api("POST", f"/repos/{ORG}/repository-requests/issues/{issue_number}/comments", "gh", {"body": comment})
     api("POST", f"/repos/{ORG}/repository-requests/issues/{issue_number}/labels", "gh", {"labels": ["status/completed"]})
