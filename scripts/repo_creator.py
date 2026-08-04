@@ -4,7 +4,7 @@ huaweicloud-mate 建仓机器人 — 按 GOAT 建仓流程文档 v1.1
 支持 9 种仓库类型 → 4 个等级初始化（2~14 项）
 """
 
-import json, os, re, time
+import json, os, re, time, sys
 import urllib.request, urllib.error
 
 ORG = os.environ.get("ORG_NAME", "huaweicloud-mate")
@@ -546,20 +546,23 @@ def main():
     if not validate_repo_name(repo_name):
         api("POST", f"/repos/{ORG}/repository-requests/issues/{issue_number}/comments", "gh",
             {"body": f"  **仓库名称格式错误**：`{repo_name}` 不符合规范（小写字母+数字+连字符，≤100字符）"})
-        return
+        print(f"FAIL: invalid repo name '{repo_name}'")
+        sys.exit(1)
 
     topics = validate_topics(topics_raw)
     if len(topics) < 3:
         api("POST", f"/repos/{ORG}/repository-requests/issues/{issue_number}/comments", "gh",
-            {"body": f"  **Topics 不足**：至少需要 3 个合法标签（当前 {len(topics)} 个）"})
-        return
+            {"body": f"  **Topics 不足**：至少需要 3 个合法标签（当前 {len(topics)} 个，有效: {', '.join(topics) or '无'}）"})
+        print(f"FAIL: topics < 3 (got {len(topics)}: {topics})")
+        sys.exit(1)
 
     # check duplicate
     existing = api("GET", f"/repos/{ORG}/{repo_name}", "bot")
     if existing and "id" in existing:
         api("POST", f"/repos/{ORG}/repository-requests/issues/{issue_number}/comments", "gh",
             {"body": f"  **仓库已存在**：`{ORG}/{repo_name}` 已存在"})
-        return
+        print(f"FAIL: repo already exists '{repo_name}'")
+        sys.exit(1)
 
     license_name = get_license(repo_type, license_choice)
     level = get_init_level(repo_type)
