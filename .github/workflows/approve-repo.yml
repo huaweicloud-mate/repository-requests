@@ -16,10 +16,10 @@ jobs:
   approve:
     runs-on: ubuntu-latest
     steps:
-      - name: Add request label
+      - name: Approve
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh issue edit ${{ inputs.issue_number }} \
             -R ${{ github.repository }} \
-            --add-label "request/create-repo"
+            --add-label "status/approved"

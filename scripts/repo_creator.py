@@ -1,503 +1,600 @@
 #!/usr/bin/env python3
 """
-Repository Creator Bot
-Reads a repo-creation Issue, creates the repo, initializes it,
-assigns roles, sends Feishu reminder for GitCode, and closes the Issue.
+huaweicloud-mate 建仓机器人 — 按 GOAT 建仓流程文档 v1.1
+支持 9 种仓库类型 → 4 个等级初始化（2~14 项）
 """
-import json
-import os
-import sys
-import re
-import urllib.request
-import urllib.error
 
-def github_api(method, path, data=None, token=None):
-    url = f"https://api.github.com{path}"
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "repo-creator-bot"
-    }
+import json, os, re, time
+import urllib.request, urllib.error
+
+ORG = os.environ.get("ORG_NAME", "huaweicloud-mate")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+EVENT_PATH = os.environ.get("GITHUB_EVENT_PATH", "")
+
+GITCODE_ORG = os.environ.get("GITCODE_ORG", "hd-vector")
+GITCODE_USERNAME = os.environ.get("GITCODE_USERNAME", "")
+GITCODE_TOKEN = os.environ.get("GITCODE_TOKEN", "")
+
+FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
+FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
+FEISHU_ADMIN_OPEN_ID = os.environ.get("FEISHU_ADMIN_OPEN_ID", "")
+
+GITHUB_API = "https://api.github.com"
+BOT_HEADERS = {"Authorization": f"Bearer {BOT_TOKEN}", "Accept": "application/vnd.github+json"}
+GH_HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+
+# ─── 类型→等级映射 ───
+PRODUCT_TYPES = ["SDK", "Terraform Provider", "GitHub Action", "框架集成", "Exporter / Plugin", "IoT SDK"]
+SAMPLE_TYPES = ["示例 / Lab / Sample"]
+DOCS_TYPES = ["文档 / 数据集"]
+INTERNAL_TYPES = ["内部配置"]
+
+
+def api(method, path, token=None, data=None):
+    headers = BOT_HEADERS if token == "bot" else GH_HEADERS
+    url = f"{GITHUB_API}{path}"
     body = json.dumps(data).encode() if data else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            if resp.status in (200, 201, 204):
-                if resp.status == 204:
-                    return {"status": "success"}
-                return json.loads(resp.read())
-            return None
+            if resp.status == 204:
+                return None
+            return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        error_body = e.read().decode()[:500]
-        print(f"GitHub API error {e.code}: {error_body}", file=sys.stderr)
-        return {"error": error_body, "status_code": e.code}
-    except Exception as e:
-        print(f"API error: {e}", file=sys.stderr)
-        return {"error": str(e)}
-
-def parse_issue_body(body):
-    fields = {}
-    sections = re.split(r'### ', body)
-    for section in sections[1:]:
-        lines = section.strip().split('\n')
-        if not lines:
-            continue
-        field_name = lines[0].strip()
-        value = '\n'.join(lines[1:]).strip() if len(lines) > 1 else ''
-        if value == '_No response_':
-            value = ''
-        fields[field_name] = value
-    return fields
-
-def parse_usernames(raw):
-    """Parse comma/space/newline separated GitHub usernames, strip @ prefix"""
-    if not raw or raw == '_No response_':
-        return []
-    cleaned = raw.replace('\n', ',').replace(' ', ',').replace('@', '')
-    return [u.strip() for u in cleaned.split(',') if u.strip()]
-
-def validate_repo_name(name):
-    if not name:
-        return False, "仓库名称不能为空"
-    if not re.match(r'^[a-z0-9][a-z0-9-]*[a-z0-9]$', name) and not re.match(r'^[a-z0-9]$', name):
-        return False, "仓库名称只能包含小写字母、数字和连字符，且不能以连字符开头或结尾"
-    if len(name) > 100:
-        return False, "仓库名称不能超过100个字符"
-    if '--' in name:
-        return False, "仓库名称不能包含连续连字符"
-    return True, ""
-
-def check_repo_exists(org, name, token):
-    result = github_api("GET", f"/repos/{org}/{name}", token=token)
-    if isinstance(result, dict) and "error" not in result and "id" in result:
-        return True
-    return False
-
-def create_repo(org, name, description, visibility, token):
-    data = {
-        "name": name, "description": description,
-        "private": visibility == "private",
-        "has_issues": True, "has_projects": True, "has_wiki": False, "auto_init": True,
-    }
-    return github_api("POST", f"/orgs/{org}/repos", data, token=token)
-
-def set_repo_topics(org, name, topics, token):
-    return github_api("PUT", f"/repos/{org}/{name}/topics", {"names": topics}, token=token)
-
-def add_label(org, repo, name, color, description, token):
-    return github_api("POST", f"/repos/{org}/{repo}/labels", {"name": name, "color": color, "description": description}, token=token)
-
-def create_file_in_repo(org, repo, path, content, message, token, branch="main"):
-    import base64
-    encoded = base64.b64encode(content.encode('utf-8')).decode('ascii')
-    return github_api("PUT", f"/repos/{org}/{repo}/contents/{path}", {"message": message, "content": encoded, "branch": branch}, token=token)
-
-def add_collaborator(org, repo, username, permission, token):
-    """Add a collaborator with a specific permission level"""
-    return github_api("PUT", f"/repos/{org}/{repo}/collaborators/{username}", {"permission": permission}, token=token)
-
-def assign_repo_roles(org, repo_name, fields, token):
-    """Assign maintainer, writer, and triage roles from parsed form fields"""
-    results = []
-    role_map = [
-        ("Maintainer（维护者）", "maintain"),
-        ("Writer（写入者）", "write"),
-        ("Triage（分类者）", "triage"),
-    ]
-    for field_name, permission in role_map:
-        usernames = parse_usernames(fields.get(field_name, ""))
-        for username in usernames:
-            r = add_collaborator(org, repo_name, username, permission, token)
-            if r and "error" not in r:
-                results.append(f"  {permission}: @{username}")
-            else:
-                error = r.get("error", "") if isinstance(r, dict) else str(r)
-                results.append(f"  {permission}: @{username} (⚠️ failed: {error[:50]})")
-    return results
-
-def get_feishu_token(app_id, app_secret):
-    url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-    headers = {"Content-Type": "application/json; charset=utf-8"}
-    data = {"app_id": app_id, "app_secret": app_secret}
-    req = urllib.request.Request(url, data=json.dumps(data).encode(), headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read()).get("tenant_access_token")
-    except Exception as e:
-        print(f"Feishu auth error: {e}", file=sys.stderr)
+        err = e.read().decode()[:500]
+        print(f"API {method} {path}: {e.code} {err}")
         return None
 
-def send_feishu_dm(open_id, card, app_id, app_secret):
-    token = get_feishu_token(app_id, app_secret)
-    if not token:
-        return False
-    url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
-    body = {"receive_id": open_id, "msg_type": "interactive", "content": json.dumps(card, ensure_ascii=False)}
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read()).get("code") == 0
-    except Exception as e:
-        print(f"Feishu send error: {e}", file=sys.stderr)
-        return False
 
-def send_gitcode_reminder(repo_name, repo_url):
-    app_id = os.environ.get("FEISHU_APP_ID", "")
-    app_secret = os.environ.get("FEISHU_APP_SECRET", "")
-    admin_open_id = os.environ.get("FEISHU_ADMIN_OPEN_ID", "")
-    gitcode_org = os.environ.get("GITCODE_ORG", "hd-vector")
-    if not all([app_id, app_secret, admin_open_id]):
-        return
-    card = {
-        "config": {"wide_screen_mode": True},
-        "header": {"title": {"tag": "plain_text", "content": "📋 请在 GitCode 创建同名仓库"}, "template": "yellow"},
-        "elements": [
-            {"tag": "markdown", "content": f"GitHub 仓库已创建，请手动在 GitCode 创建同名仓库以启用自动同步。"},
-            {"tag": "div", "fields": [
-                {"is_short": False, "text": {"tag": "lark_md", "content": f"**仓库名称**：`{repo_name}`"}},
-                {"is_short": False, "text": {"tag": "lark_md", "content": f"**GitCode 路径**：`{gitcode_org}/{repo_name}`"}},
-            ]},
-            {"tag": "action", "actions": [
-                {"tag": "button", "text": {"tag": "plain_text", "content": "去 GitCode 创建仓库"}, "type": "primary", "url": f"https://gitcode.com/{gitcode_org}/projects/new"},
-                {"tag": "button", "text": {"tag": "plain_text", "content": "查看 GitHub 仓库"}, "type": "default", "url": repo_url},
-            ]},
-        ]
-    }
-    send_feishu_dm(admin_open_id, card, app_id, app_secret)
+def load_event():
+    with open(EVENT_PATH) as f:
+        return json.load(f)
 
-def initialize_repo(org, repo_name, language, license_name, description, token):
-    results = []
-    labels_to_create = [
-        ("bug", "d73a4a", "Bug report"), ("enhancement", "a2eeef", "Feature request"),
-        ("question", "d876e3", "Question"), ("documentation", "0075ca", "Documentation"),
-        ("good first issue", "7057ff", "Good for newcomers"), ("help wanted", "008672", "Extra attention needed"),
-        ("priority/critical", "b60205", "Critical priority"), ("priority/high", "d93f0b", "High priority"),
-        ("priority/medium", "fbca04", "Medium priority"), ("priority/low", "0e8a16", "Low priority"),
-        ("agent/triaged", "bfd4f2", "Automatically triaged by AI agent"),
-        ("status/pending", "fbca04", "Pending review"), ("status/in-progress", "1d76db", "Work in progress"),
-        ("status/blocked", "b60205", "Blocked"),
-    ]
-    for name, color, desc in labels_to_create:
-        r = add_label(org, repo_name, name, color, desc, token)
-        if r and "error" not in r:
-            results.append(f"  label: {name}")
 
-    contributing = f"""# 贡献指南
+# ─── 许可证策略 ───
+def get_license(repo_type, user_choice):
+    if repo_type in PRODUCT_TYPES:
+        choice_map = {"Apache-2.0（推荐）": "Apache-2.0", "Apache-2.0": "Apache-2.0", "MIT": "MIT", "BSD-3-Clause": "BSD-3-Clause"}
+        return choice_map.get(user_choice, "Apache-2.0")
+    return "Apache-2.0"
 
-感谢您对 `{repo_name}` 项目的关注！
 
-## 如何贡献
+# ─── README 模板（9套） ───
+README_TEMPLATES = {
+    "SDK": """# {name}
+[![License](https://img.shields.io/badge/License-{license}-blue.svg)](LICENSE)
 
-1. Fork 本仓库
-2. 创建功能分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'Add amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 创建 Pull Request
+{description}
 
-## 开发流程
+## 安装
+```bash
+pip install {name}
+```
 
-- 所有 PR 需要至少 1 个 review
-- CI 必须通过才能合入
-- 遵循项目的代码风格
+## API 参考
+待补充
 
-## 问题反馈
+## 贡献
+查看 [CONTRIBUTING.md](CONTRIBUTING.md)
 
-- Bug 报告：使用 Issue 模板
-- 功能建议：使用 Issue 模板
-- 安全漏洞：请通过邮件私密报告
+## 许可证
+本项目使用 {license} 许可证。
+""",
+    "Terraform Provider": """# {name}
+[![License](https://img.shields.io/badge/License-{license}-blue.svg)](LICENSE)
+
+{description}
+
+## Provider 配置
+```hcl
+provider "{name}" {{
+  # 配置项
+}}
+```
+
+## Resource / DataSource 列表
+待补充
+
+## 贡献
+查看 [CONTRIBUTING.md](CONTRIBUTING.md)
+""",
+    "GitHub Action": """# {name}
+[![License](https://img.shields.io/badge/License-{license}-blue.svg)](LICENSE)
+
+{description}
+
+## Inputs
+| 参数 | 类型 | 必需 | 默认值 | 说明 |
+|------|------|------|--------|------|
+
+## Outputs
+| 输出 | 说明 |
+|------|------|
+
+## 使用示例
+```yaml
+- uses: huaweicloud-mate/{name}@v1
+  with:
+    param: value
+```
+
+## 贡献
+查看 [CONTRIBUTING.md](CONTRIBUTING.md)
+""",
+    "框架集成": """# {name}
+[![License](https://img.shields.io/badge/License-{license}-blue.svg)](LICENSE)
+
+{description}
+
+## 快速集成
+```bash
+pip install {name}
+```
+
+## 配置说明
+待补充
+
+## 版本兼容
+| 版本 | 兼容语言 / 框架 | 状态 |
+|------|----------------|------|
+
+## 贡献
+查看 [CONTRIBUTING.md](CONTRIBUTING.md)
+""",
+    "Exporter / Plugin": """# {name}
+[![License](https://img.shields.io/badge/License-{license}-blue.svg)](LICENSE)
+
+{description}
+
+## 部署方式
+```bash
+docker run -d --name {name} huaweicloud-mate/{name}:latest
+```
+
+## 指标说明
+待补充
+
+## 贡献
+查看 [CONTRIBUTING.md](CONTRIBUTING.md)
+""",
+    "IoT SDK": """# {name}
+[![License](https://img.shields.io/badge/License-{license}-blue.svg)](LICENSE)
+
+{description}
+
+## 硬件要求
+待补充
+
+## 设备接入示例
+```python
+from {name} import Device
+device = Device("device-id")
+device.connect()
+```
+
+## 贡献
+查看 [CONTRIBUTING.md](CONTRIBUTING.md)
+""",
+    "示例 / Lab / Sample": """# {name}
+
+{description}
+
+## 前置条件
+- 语言环境
+- 依赖安装
+
+## 运行步骤
+```bash
+# 运行示例
+```
+
+## 效果展示
+待补充
+""",
+    "文档 / 数据集": """# {name}
+
+{description}
+
+## 内容说明
+待补充
+
+## 使用方式
+待补充
+""",
+    "内部配置": """# {name}
+
+{description}
+
+> 内部配置仓库
+
+## 用途
+待补充
+
+## 使用方式
+待补充
+""",
+}
+
+
+def make_readme(name, repo_type, license_name, description):
+    tmpl = README_TEMPLATES.get(repo_type, README_TEMPLATES["SDK"])
+    return tmpl.format(name=name, license=license_name, description=description)
+
+
+# ─── 文件模板 ───
+CONTRIBUTING_MD = """# Contributing to {name}
+
+## 开发环境搭建
+见 README。
+
+## 提交规范
+使用约定式提交：`feat:`, `fix:`, `docs:`, `style:`, `refactor:`, `test:`, `chore:`
+
+## PR 流程
+1. Fork 仓库
+2. 创建分支 `feat/xxx`
+3. 提交代码
+4. 发起 Pull Request
+5. 至少 2 人 Review + CI 通过后合并
+
+## Issue 规范
+使用 Bug Report / Feature Request 模板
 """
-    r = create_file_in_repo(org, repo_name, "CONTRIBUTING.md", contributing, "chore: add CONTRIBUTING.md", token)
-    if r and "error" not in r:
-        results.append("  CONTRIBUTING.md")
 
-    security = f"""# 安全策略
+SECURITY_MD = """# Security Policy
 
 ## 报告安全漏洞
+如发现安全漏洞，请发送邮件至 security@huaweicloud-mate.dev，**不要在公开 Issue 中披露**。
 
-**请勿通过GitHub Issue公开报告安全漏洞。**
-
-请发送邮件至 huaweicloud-mate@huawei.com 报告安全漏洞。
-
-我们承诺：
-- 48小时内确认收到报告
-- 7天内提供初步评估
-- 修复后及时通知报告者
+## 支持版本
+| 版本 | 支持状态 |
+|------|---------|
+| 最新 | ✅ 活跃支持 |
 """
-    r = create_file_in_repo(org, repo_name, "SECURITY.md", security, "chore: add SECURITY.md", token)
-    if r and "error" not in r:
-        results.append("  SECURITY.md")
 
-    dependabot = """version: 2
+COC_MD = """# Contributor Covenant Code of Conduct
+
+## 我们的承诺
+为了营造一个开放和友好的环境，我们承诺尊重所有参与者。
+
+## 我们的标准
+- 使用友好和包容的语言
+- 尊重不同的观点和经验
+- 建设性地接受批评
+
+## 执行
+违规行为可报告至项目维护者。
+"""
+
+BUG_REPORT_YML = """name: Bug Report
+description: 报告一个 bug
+labels: ["type/bug"]
+body:
+  - type: textarea
+    attributes:
+      label: 描述
+      description: 发生了什么
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 复现步骤
+  - type: textarea
+    attributes:
+      label: 期望行为
+  - type: textarea
+    attributes:
+      label: 环境信息
+"""
+
+FEATURE_YML = """name: Feature Request
+description: 请求一个新功能
+labels: ["type/feature"]
+body:
+  - type: textarea
+    attributes:
+      label: 描述
+      description: 你希望添加什么功能
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 使用场景
+"""
+
+CONFIG_YML = """blank_issues_enabled: false
+"""
+
+PR_TEMPLATE = """## 变更说明
+
+
+## 关联 Issue
+Fixes #
+
+## 测试
+- [ ] 单元测试通过
+- [ ] 手动测试通过
+"""
+
+TRIAGE_WORKFLOW = """name: Issue Triage
+on:
+  issues:
+    types: [opened]
+permissions:
+  issues: write
+  contents: read
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: huaweicloud-mate/.github/actions/issue-bot@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+"""
+
+SYNC_WORKFLOW = f"""name: Sync to GitCode
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: |
+          git remote add gitcode https://{GITCODE_USERNAME}:${{{{ secrets.GITCODE_TOKEN }}}}@gitcode.com/{GITCODE_ORG}/${{{{ github.event.repository.name }}}}.git || true
+          git push gitcode main --force
+"""
+
+DEPENDABOT = """version: 2
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "pip"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "npm"
-    directory: "/"
-    schedule:
-      interval: "weekly"
 """
-    r = create_file_in_repo(org, repo_name, ".github/dependabot.yml", dependabot, "chore: add dependabot config", token)
-    if r and "error" not in r:
-        results.append("  dependabot.yml")
 
-    github_api("PUT", f"/repos/{org}/{repo_name}/vulnerability-alerts", token=token)
-    github_api("PUT", f"/repos/{org}/{repo_name}/automated-security-fixes", token=token)
-    results.append("  security alerts + auto fixes")
+LABELS_PRODUCT = ["type/bug", "type/enhancement", "type/question", "type/documentation",
+                  "priority/critical", "priority/high", "priority/medium", "priority/low",
+                  "status/pending", "status/in-progress", "status/blocked",
+                  "good first issue", "help wanted", "agent/triaged"]
+LABELS_SAMPLE = LABELS_PRODUCT[:8]
 
-    bug_template = """name: 🐛 Bug Report
-description: Report a bug
-labels: ["bug"]
-body:
-  - type: textarea
-    id: description
-    attributes:
-      label: Description
-      description: Describe the bug
-    validations:
-      required: true
-  - type: textarea
-    id: steps
-    attributes:
-      label: Steps to Reproduce
-    validations:
-      required: true
-  - type: textarea
-    id: expected
-    attributes:
-      label: Expected Behavior
-    validations:
-      required: true
-  - type: textarea
-    id: actual
-    attributes:
-      label: Actual Behavior
-    validations:
-      required: true
-  - type: textarea
-    id: environment
-    attributes:
-      label: Environment
-"""
-    r = create_file_in_repo(org, repo_name, ".github/ISSUE_TEMPLATE/bug_report.yml", bug_template, "chore: add bug report template", token)
-    if r and "error" not in r:
-        results.append("  bug_report.yml")
 
-    feature_template = """name: ✨ Feature Request
-description: Request a new feature
-labels: ["enhancement"]
-body:
-  - type: textarea
-    id: problem
-    attributes:
-      label: Problem Statement
-      description: What problem does this feature solve?
-    validations:
-      required: true
-  - type: textarea
-    id: solution
-    attributes:
-      label: Proposed Solution
-    validations:
-      required: true
-  - type: textarea
-    id: alternatives
-    attributes:
-      label: Alternatives Considered
-"""
-    r = create_file_in_repo(org, repo_name, ".github/ISSUE_TEMPLATE/feature_request.yml", feature_template, "chore: add feature request template", token)
-    if r and "error" not in r:
-        results.append("  feature_request.yml")
+def create_file(repo, path, content, message):
+    api("PUT", f"/repos/{ORG}/{repo}/contents/{path}", "bot", {"message": message, "content": b64(content)})
 
-    template_config = "blank_issues_enabled: false\n"
-    r = create_file_in_repo(org, repo_name, ".github/ISSUE_TEMPLATE/config.yml", template_config, "chore: add issue template config", token)
-    if r and "error" not in r:
-        results.append("  issue config.yml")
 
-    triage_workflow = """name: Triage Issue
+def b64(s):
+    import base64
+    return base64.b64encode(s.encode()).decode()
 
-on:
-  issues:
-    types: [opened, edited]
 
-permissions:
-  issues: write
-  contents: read
+def create_labels(repo, labels):
+    for name in labels:
+        api("POST", f"/repos/{ORG}/{repo}/labels", "bot", {"name": name, "color": "ededed"})
 
-jobs:
-  triage:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout .github org repo
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/.github
-          path: .github-repo
-          ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+def validate_repo_name(name):
+    return bool(re.match(r'^[a-z0-9]([a-z0-9-]*[a-z0-9])?$', name)) and len(name) <= 100
 
-      - name: Run Triage Agent
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ISSUE_NUMBER: ''
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_MODEL: 'glm-4-flash'
-          LLM_ENDPOINT: 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
-          CONFIDENCE_THRESHOLD: '0.7'
-          DRY_RUN: 'false'
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_EVENT_PATH: ${{ github.event_path }}
-        run: python3 .github-repo/actions/triage/triage_agent.py
-"""
-    r = create_file_in_repo(org, repo_name, ".github/workflows/triage-issue.yml", triage_workflow, "feat: enable Triage Agent", token)
-    if r and "error" not in r:
-        results.append("  triage-issue.yml")
 
-    sync_workflow = """name: Sync to GitCode
+def validate_topics(topics_str):
+    topics = re.split(r'[,\n]+', topics_str.strip())
+    valid = []
+    for t in topics:
+        t = t.strip().lower()
+        if re.match(r'^[a-z0-9][a-z0-9.-]*$', t):
+            valid.append(t)
+    return valid
 
-on:
-  push:
-    branches: ["*"]
-  delete:
 
-jobs:
-  sync:
-    uses: huaweicloud-mate/.github/.github/workflows/sync-to-gitcode.yml@main
-    secrets:
-      GITCODE_USERNAME: ${{ secrets.GITCODE_USERNAME }}
-      GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
-"""
-    r = create_file_in_repo(org, repo_name, ".github/workflows/sync-to-gitcode.yml", sync_workflow, "feat: add GitCode sync workflow", token)
-    if r and "error" not in r:
-        results.append("  sync-to-gitcode.yml")
+def assign_role(repo, role, users):
+    if not users:
+        return
+    role_map = {"owner": "admin", "maintainer": "maintain", "writer": "push"}
+    perm = role_map.get(role, "push")
+    for user in users:
+        api("PUT", f"/repos/{ORG}/{repo}/collaborators/{user}", "bot", {"permission": perm})
 
-    return results
+
+def notify_feishu(repo_name, repo_type, url, author):
+    if not all([FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_ADMIN_OPEN_ID]):
+        return
+    try:
+        token_resp = json.loads(urllib.request.urlopen(
+            urllib.request.Request("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                                   data=json.dumps({"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}).encode(),
+                                   headers={"Content-Type": "application/json"}), timeout=10).read())
+        token = token_resp.get("tenant_access_token", "")
+        if not token:
+            return
+
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": "  仓库创建成功"}, "template": "turquoise"},
+            "elements": [
+                {"tag": "markdown", "content": f"**{author}** 申请的仓库已创建"},
+                {"tag": "div", "fields": [
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**仓库名称**\n{repo_name}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**类型**\n{repo_type}"}},
+                ]},
+                {"tag": "action", "actions": [
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "查看仓库"}, "type": "primary", "url": url},
+                ]},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": "huaweicloud-mate Repo Creator"}]}
+            ]
+        }
+        urllib.request.urlopen(urllib.request.Request(
+            f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
+            data=json.dumps({"receive_id": FEISHU_ADMIN_OPEN_ID, "msg_type": "interactive",
+                             "content": json.dumps(card, ensure_ascii=False)}).encode(),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}), timeout=10)
+        print("Feishu notification sent")
+    except Exception as e:
+        print(f"Feishu notification failed: {e}")
+
+
+def get_init_level(repo_type):
+    if repo_type in PRODUCT_TYPES:
+        return "product"
+    elif repo_type in SAMPLE_TYPES:
+        return "sample"
+    elif repo_type in DOCS_TYPES:
+        return "docs"
+    else:
+        return "internal"
+
 
 def main():
-    event_path = os.environ.get("GITHUB_EVENT_PATH", "")
-    token = os.environ.get("GITHUB_TOKEN", "")
-    org = os.environ.get("ORG_NAME", "huaweicloud-mate")
-    bot_token = os.environ.get("BOT_TOKEN", token)
-
-    if not event_path or not os.path.exists(event_path):
-        print("No event payload found")
-        return
-
-    with open(event_path) as f:
-        event = json.load(f)
-
+    event = load_event()
     issue = event.get("issue", {})
     issue_number = issue.get("number", 0)
-    issue_title = issue.get("title", "")
-    issue_body = issue.get("body", "") or ""
-    issue_labels = [l["name"] for l in issue.get("labels", [])]
-    repo_full = os.environ.get("GITHUB_REPOSITORY", "")
+    labels = [l["name"] for l in issue.get("labels", [])]
+    title = issue.get("title", "")
 
-    print(f"Processing Issue #{issue_number}: {issue_title}")
-    print(f"Labels: {issue_labels}")
-
-    if "request/create-repo" not in issue_labels:
-        print("Not a repo creation request, skipping")
-        return
-    if "status/completed" in issue_labels or "status/failed" in issue_labels:
-        print("Already processed, skipping")
+    if "status/approved" not in labels:
+        print("Not approved, skipping")
         return
 
-    fields = parse_issue_body(issue_body)
-    print(f"Parsed fields: {json.dumps(fields, ensure_ascii=False)}")
+    body = issue.get("body", "")
+    author = issue.get("user", {}).get("login", "")
 
-    repo_name = fields.get("仓库名称", "").strip()
-    description = fields.get("仓库描述", "").strip()
-    visibility = fields.get("可见性", "public").strip().lower()
-    language = fields.get("主要编程语言", "Python").strip()
-    license_name = fields.get("开源许可证", "Apache-2.0").strip()
-    topics_str = fields.get("仓库标签（Topics）", "").strip()
-    justification = fields.get("申请理由", "").strip()
+    fields = {}
+    for line in body.split("\n"):
+        for prefix in ["### 仓库类型", "### 仓库名称", "### 仓库描述", "### 可见性", "### 开源许可证",
+                        "### Topics 标签", "### Owner", "### Maintainer", "### Writer", "### 申请理由"]:
+            if line.startswith(prefix):
+                key = prefix.replace("### ", "").strip()
+                val = line[len(prefix):].strip().lstrip("_No response_").strip()
+                if val:
+                    fields[key] = val
 
-    valid, msg = validate_repo_name(repo_name)
-    if not valid:
-        github_api("POST", f"/repos/{repo_full}/issues/{issue_number}/comments",
-                   {"body": f"❌ {msg}"}, token=token)
-        github_api("POST", f"/repos/{repo_full}/issues/{issue_number}/labels",
-                   {"labels": ["status/failed"]}, token=token)
+    repo_type = fields.get("仓库类型", "SDK")
+    repo_name = fields.get("仓库名称", "").strip().lower()
+    description = fields.get("仓库描述", "")
+    visibility = fields.get("可见性", "public").lower()
+    license_choice = fields.get("开源许可证", "Apache-2.0")
+    topics_raw = fields.get("Topics 标签", "")
+    owner_str = fields.get("Owner", "")
+    maintainer_str = fields.get("Maintainer", "")
+    writer_str = fields.get("Writer", "")
+    justification = fields.get("申请理由", "")
+
+    print(f"Processing Issue #{issue_number}: {title}")
+    print(f"Type: {repo_type}, Name: {repo_name}")
+
+    if not validate_repo_name(repo_name):
+        api("POST", f"/repos/{ORG}/repository-requests/issues/{issue_number}/comments", "gh",
+            {"body": f"  **仓库名称格式错误**：`{repo_name}` 不符合规范（小写字母+数字+连字符，≤100字符）"})
         return
 
-    if check_repo_exists(org, repo_name, bot_token):
-        github_api("POST", f"/repos/{repo_full}/issues/{issue_number}/comments",
-                   {"body": f"❌ 仓库 `{org}/{repo_name}` 已存在！"}, token=token)
-        github_api("POST", f"/repos/{repo_full}/issues/{issue_number}/labels",
-                   {"labels": ["status/failed"]}, token=token)
+    topics = validate_topics(topics_raw)
+    if len(topics) < 3:
+        api("POST", f"/repos/{ORG}/repository-requests/issues/{issue_number}/comments", "gh",
+            {"body": f"  **Topics 不足**：至少需要 3 个合法标签（当前 {len(topics)} 个）"})
         return
 
-    github_api("POST", f"/repos/{repo_full}/issues/{issue_number}/comments",
-               {"body": f"### 🤖 仓库创建机器人\n\n⏳ 正在处理建仓请求...\n\n- 仓库名称: `{repo_name}`\n- 可见性: {visibility}\n- 语言: {language}"}, token=token)
-    github_api("POST", f"/repos/{repo_full}/issues/{issue_number}/labels",
-               {"labels": ["status/in-progress"]}, token=token)
-
-    print(f"Creating repo: {org}/{repo_name}")
-    result = create_repo(org, repo_name, description, visibility, bot_token)
-    if not result or (isinstance(result, dict) and "error" in result):
-        error_detail = result.get("error", "Unknown error") if isinstance(result, dict) else "Unknown error"
-        github_api("POST", f"/repos/{repo_full}/issues/{issue_number}/comments",
-                   {"body": f"❌ 创建仓库失败！\n```\n{error_detail}\n```"}, token=token)
-        github_api("POST", f"/repos/{repo_full}/issues/{issue_number}/labels",
-                   {"labels": ["status/failed"]}, token=token)
+    # check duplicate
+    existing = api("GET", f"/repos/{ORG}/{repo_name}", "bot")
+    if existing and "id" in existing:
+        api("POST", f"/repos/{ORG}/repository-requests/issues/{issue_number}/comments", "gh",
+            {"body": f"  **仓库已存在**：`{ORG}/{repo_name}` 已存在"})
         return
 
-    repo_url = result.get("html_url", "")
+    license_name = get_license(repo_type, license_choice)
+    level = get_init_level(repo_type)
+
+    # create repo
+    create_data = {
+        "name": repo_name,
+        "description": description,
+        "private": visibility == "private",
+        "auto_init": True,
+        "has_issues": True,
+        "has_projects": False,
+        "has_wiki": False,
+        "allow_squash_merge": True,
+        "allow_merge_commit": False,
+        "allow_rebase_merge": False,
+    }
+    result = api("POST", f"/orgs/{ORG}/repos", "bot", create_data)
+    if not result or "id" not in result:
+        print(f"Failed to create repo: {result}")
+        return
+
+    repo_url = result["html_url"]
     print(f"Repo created: {repo_url}")
 
-    topics = [t.strip() for t in topics_str.split(",") if t.strip()] if topics_str else []
-    if topics:
-        set_repo_topics(org, repo_name, topics, bot_token)
+    # init files
+    readme = make_readme(repo_name, repo_type, license_name, description)
+    create_file(repo_name, "README.md", readme, "Init README")
+    create_file(repo_name, "LICENSE", f"{license_name} License\n", f"Add {license_name} license")
 
-    print("Initializing repo...")
-    init_results = initialize_repo(org, repo_name, language, license_name, description, bot_token)
+    if level in ("product", "sample"):
+        create_file(repo_name, "CONTRIBUTING.md", CONTRIBUTING_MD.format(name=repo_name), "Add contributing guide")
+    if level == "product":
+        create_file(repo_name, "SECURITY.md", SECURITY_MD, "Add security policy")
+        create_file(repo_name, "CODE_OF_CONDUCT.md", COC_MD, "Add code of conduct")
+    if level in ("product", "sample"):
+        create_file(repo_name, ".github/ISSUE_TEMPLATE/bug_report.yml", BUG_REPORT_YML, "Add bug template")
+        create_file(repo_name, ".github/ISSUE_TEMPLATE/feature_request.yml", FEATURE_YML, "Add feature template")
+        create_file(repo_name, ".github/ISSUE_TEMPLATE/config.yml", CONFIG_YML, "Add issue config")
+        create_file(repo_name, ".github/PULL_REQUEST_TEMPLATE.md", PR_TEMPLATE, "Add PR template")
+    if level == "product":
+        create_file(repo_name, ".github/dependabot.yml", DEPENDABOT, "Add dependabot config")
+        create_file(repo_name, ".github/workflows/triage-issue.yml", TRIAGE_WORKFLOW, "Add triage workflow")
+        create_file(repo_name, ".github/workflows/sync-to-gitcode.yml", SYNC_WORKFLOW, "Add GitCode sync workflow")
 
-    print("Assigning roles...")
-    role_results = assign_repo_roles(org, repo_name, fields, bot_token)
+    # labels
+    if level == "product":
+        create_labels(repo_name, LABELS_PRODUCT)
+    elif level == "sample":
+        create_labels(repo_name, LABELS_SAMPLE)
 
-    send_gitcode_reminder(repo_name, repo_url)
+    # topics
+    api("PUT", f"/repos/{ORG}/{repo_name}/topics", "bot",
+        {"names": topics[:20]})
 
-    success_parts = [
-        f"### 🤖 仓库创建机器人\n",
-        f"✅ 仓库创建成功！\n",
-        f"| 属性 | 值 |\n|------|----|\n",
-        f"| 仓库 | [`{org}/{repo_name}`]({repo_url}) |\n",
-        f"| 可见性 | {visibility} |\n",
-        f"| 语言 | {language} |\n",
-        f"| 许可证 | {license_name} |\n",
-    ]
-    if topics:
-        success_parts.append(f"| Topics | {', '.join(topics)} |\n")
-    success_parts.append(f"\n**初始化内容：**\n")
-    for item in init_results:
-        success_parts.append(f"- {item}\n")
-    success_parts.append(f"\n**角色分配：**\n")
-    for item in role_results:
-        success_parts.append(f"- {item}\n")
-    success_parts.append(f"\n> ℹ️ 飞书已发送 GitCode 建仓提醒\n")
-    success_parts.append(f"\n<sub>repo-creator-bot v1.0</sub>")
+    # roles
+    owners = [u.strip() for u in re.split(r'[,\n]+', owner_str) if u.strip()]
+    maintainers = [u.strip() for u in re.split(r'[,\n]+', maintainer_str) if u.strip()]
+    writers = [u.strip() for u in re.split(r'[,\n]+', writer_str) if u.strip()]
 
-    github_api("POST", f"/repos/{repo_full}/issues/{issue_number}/comments",
-               {"body": "".join(success_parts)}, token=token)
-    github_api("POST", f"/repos/{repo_full}/issues/{issue_number}/labels",
-               {"labels": ["status/completed"]}, token=token)
-    github_api("PATCH", f"/repos/{repo_full}/issues/{issue_number}",
-               {"state": "closed", "state_reason": "completed"}, token=token)
+    for u in owners:
+        assign_role(repo_name, "owner", [u])
+    for u in maintainers:
+        if u not in owners:
+            assign_role(repo_name, "maintainer", [u])
+    for u in writers:
+        if u not in owners and u not in maintainers:
+            assign_role(repo_name, "writer", [u])
 
-    print(f"Issue #{issue_number} closed successfully")
+    # close issue
+    init_count = {"product": 14, "sample": 7, "docs": 3, "internal": 2}[level]
+    comment = f"""##  建仓完成
+
+| 项目 | 详情 |
+|------|------|
+| 仓库 | [{ORG}/{repo_name}]({repo_url}) |
+| 类型 | {repo_type}（{level} 级） |
+| 许可证 | {license_name} |
+| 初始化 | {init_count} 项 |
+| 可见性 | {visibility} |"""
+
+    api("POST", f"/repos/{ORG}/repository-requests/issues/{issue_number}/comments", "gh", {"body": comment})
+    api("POST", f"/repos/{ORG}/repository-requests/issues/{issue_number}/labels", "gh", {"labels": ["status/completed"]})
+    api("PATCH", f"/repos/{ORG}/repository-requests/issues/{issue_number}", "gh", {"state": "closed"})
+
+    notify_feishu(repo_name, repo_type, repo_url, author)
+
+    print("Done.")
+
 
 if __name__ == "__main__":
     main()
