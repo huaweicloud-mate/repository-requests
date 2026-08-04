@@ -714,6 +714,50 @@ Fixes #
 
 
 
+CI_WORKFLOW = """name: CI
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run linter
+        run: |
+          echo "Running lint checks..."
+          # Python: pip install ruff && ruff check .
+          # JS: npx eslint .
+          # Go: golangci-lint run .
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: |
+          echo "Running tests..."
+          # Python: pip install pytest && pytest
+          # JS: npm test
+          # Go: go test ./...
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          echo "Build successful"
+"""
+
+CODEOWNERS_MD = """# CODEOWNERS - auto-assign PR reviewers
+* @shuangheaven
+"""
+
 TRIAGE_WORKFLOW = """name: Issue Triage
 
 on:
@@ -1292,6 +1336,10 @@ def main():
     create_file(repo_name, "README.md", readme, "Init README")
 
     create_file(repo_name, "LICENSE", f"{license_name} License\n", f"Add {license_name} license")
+    # PR standards (all levels): CI + CODEOWNERS
+    create_file(repo_name, ".github/workflows/ci.yml", CI_WORKFLOW, "Add CI workflow")
+    create_file(repo_name, ".github/CODEOWNERS", CODEOWNERS_MD, "Add CODEOWNERS")
+
 
 
 
