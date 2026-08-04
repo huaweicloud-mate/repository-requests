@@ -386,7 +386,7 @@ jobs:
         with:
           fetch-depth: 0
       - run: |
-          git remote add gitcode https://{GITCODE_USERNAME}:${{{{ secrets.GITCODE_TOKEN }}}}@gitcode.com/{GITCODE_ORG}/${{{{ github.event.repository.name }}}}.git || true
+          git remote add gitcode https://oauth2:${{{{ secrets.GITCODE_TOKEN }}}}@gitcode.com/{GITCODE_ORG}/${{{{ github.event.repository.name }}}}.git || true
           git push gitcode main --force
 """
 
