@@ -22,19 +22,11 @@ jobs:
       - name: Reject
         env:
           GH_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          REASON: ${{ inputs.reason }}
         run: |
-          # Add rejection comment
-          gh issue comment ${{ inputs.issue_number }} \
-            -R ${{ github.repository }} \
-            --body "## 建仓申请未通过
-
-您的建仓申请已被拒绝，原因如下：
-
-> ${{ inputs.reason }}
-
-如有疑问请联系管理员。"
-          # Add status/declined label
-          gh issue edit ${{ inputs.issue_number }} \
-            -R ${{ github.repository }} \
+          gh issue comment "$ISSUE_NUMBER" -R "${{ github.repository }}" \
+            --body "您的建仓申请已被拒绝，原因如下：$REASON"
+          gh issue edit "$ISSUE_NUMBER" -R "${{ github.repository }}" \
             --add-label "status/declined"
-          echo "Rejected issue #${{ inputs.issue_number }}"
+          echo "Rejected issue #$ISSUE_NUMBER"
