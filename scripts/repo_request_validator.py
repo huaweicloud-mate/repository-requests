@@ -32,7 +32,9 @@ def parse_fields(body):
             if line.startswith(prefix):
                 key = prefix.replace("### ", "").strip()
                 for j in range(i + 1, min(i + 3, len(lines))):
-                    val = lines[j].strip().lstrip("_No response_").strip()
+                    val = lines[j].strip()
+                    if val.startswith("_No response_"):
+                        val = ""
                     if val and not val.startswith("###") and not val.startswith("_"):
                         fields[key] = val
                         break
