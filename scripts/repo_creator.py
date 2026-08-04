@@ -68,7 +68,11 @@ def b64(s):
 
 
 def put_file(repo, path, content, msg):
-    api("PUT", f"/repos/{ORG}/{repo}/contents/{path}", "bot", {"message": msg, "content": b64(content)})
+    existing = api("GET", f"/repos/{ORG}/{repo}/contents/{path}", "bot")
+    data = {"message": msg, "content": b64(content)}
+    if existing and "sha" in existing:
+        data["sha"] = existing["sha"]
+    api("PUT", f"/repos/{ORG}/{repo}/contents/{path}", "bot", data)
 
 
 def add_labels(repo, labels):
@@ -233,10 +237,23 @@ def get_level(repo_type):
 
 
 def create_gitcode_repo(repo_name, desc):
-    group = gc_api("GET", f"/groups/{GITCODE_ORG}")
-    if not group or "id" not in group:
-        print(f"Failed to get GitCode group {GITCODE_ORG}")
+    # Try multiple GitCode v5 group paths
+    for path in [f"/{GITCODE_ORG}", f"/groups/{GITCODE_ORG}", f"/groups?search={GITCODE_ORG}"]:
+        group = gc_api("GET", path)
+        if group and ("id" in group or isinstance(group, list)):
+            break
+        print(f"GitCode path failed: {path}")
+
+    if not group:
+        print(f"Failed to find GitCode group {GITCODE_ORG}")
         return None
+
+    # If response is a list, take first matching
+    if isinstance(group, list):
+        group = group[0] if group else None
+        if not group or "id" not in group:
+            return None
+
     result = gc_api("POST", "/projects", {
         "name": repo_name, "path": repo_name, "namespace_id": group["id"],
         "description": desc or "", "visibility": "public", "initialize_with_readme": False
