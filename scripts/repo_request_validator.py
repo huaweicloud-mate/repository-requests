@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Repo request form validator - validates issue before labeling status/pending"""
-import json, os, re
-import urllib.request, urllib.error
+"""Repo request form validator + Feishu notify on validation pass"""
+import json, os, re, urllib.request, urllib.error
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_API = "https://api.github.com"
 HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+
+FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
+FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
+FEISHU_ADMIN_OPEN_ID = os.environ.get("FEISHU_ADMIN_OPEN_ID", "")
 
 
 def api(method, path, data=None):
@@ -20,6 +23,46 @@ def api(method, path, data=None):
     except urllib.error.HTTPError as e:
         print(f"API {method} {path}: {e.code} {e.read().decode()[:200]}")
         return None
+
+
+def notify_feishu(repo_name, repo_type, repo_full, issue_number):
+    if not all([FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_ADMIN_OPEN_ID]):
+        print("Feishu credentials not configured, skip notify")
+        return
+    try:
+        data = json.dumps({"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}).encode()
+        req = urllib.request.Request(
+            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            data=data, headers={"Content-Type": "application/json"})
+        token = json.loads(urllib.request.urlopen(req, timeout=10).read()).get("tenant_access_token", "")
+        if not token:
+            return
+        issue_url = f"https://github.com/{repo_full}/issues/{issue_number}"
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": "  New Repo Request"}, "template": "blue"},
+            "elements": [
+                {"tag": "markdown", "content": f"收到新的建仓申请（已通过校验）"},
+                {"tag": "div", "fields": [
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**仓库名称**\n{repo_name}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**类型**\n{repo_type}"}},
+                ]},
+                {"tag": "action", "actions": [
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "查看 Issue"}, "type": "primary", "url": issue_url},
+                    {"tag": "button", "text": {"tag": "plain_text", "content": "Approve Repo"}, "type": "default",
+                     "url": f"https://github.com/{repo_full}/actions/workflows/approve-repo.yml?issue_number={issue_number}"},
+                ]},
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": "huaweicloud-mate Repo Validator"}]}
+            ]
+        }
+        urllib.request.urlopen(urllib.request.Request(
+            "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
+            data=json.dumps({"receive_id": FEISHU_ADMIN_OPEN_ID, "msg_type": "interactive",
+                             "content": json.dumps(card, ensure_ascii=False)}).encode(),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}), timeout=10)
+        print("Feishu notify sent")
+    except Exception as e:
+        print(f"Feishu notify failed: {e}")
 
 
 def parse_fields(body):
@@ -60,13 +103,12 @@ def main():
     with open(event_path) as f:
         event = json.load(f)
 
-    action = event.get("action", "")
     issue = event.get("issue", {})
     number = issue.get("number", 0)
     body = issue.get("body", "")
     repo_full = event.get("repository", {}).get("full_name", "")
 
-    # only process repo creation requests (has 仓库名称 field)
+    # only process repo creation requests
     if "### 仓库名称" not in (body or ""):
         print(f"Issue #{number}: not a repo creation request, skip validation")
         return
@@ -80,25 +122,21 @@ def main():
 
     errors = []
 
-    # validate repo name
     if not repo_name:
         errors.append("- 仓库名称不能为空")
     elif not validate_repo_name(repo_name):
         errors.append(f"- 仓库名称 `{repo_name}` 不符合规范（小写字母+数字+连字符，≤100字符，不以连字符开头/结尾）")
 
-    # validate repo type
     valid_types = ["SDK", "Terraform Provider", "GitHub Action", "框架集成",
                    "Exporter / Plugin", "IoT SDK", "示例 / Lab / Sample",
                    "文档 / 数据集", "内部配置"]
     if repo_type and repo_type not in valid_types:
         errors.append(f"- 仓库类型 `{repo_type}` 无效，可选: {', '.join(valid_types)}")
 
-    # validate topics
     topics = validate_topics(topics_raw)
     if len(topics) < 3:
         errors.append(f"- Topics 至少需要 3 个合法标签（当前 {len(topics)} 个: {', '.join(topics) or '无'}）")
 
-    # validate roles
     owners = split_users(owner_str)
     maintainers = split_users(maint_str)
     if not owners:
@@ -109,22 +147,20 @@ def main():
     comment_path = f"/repos/{repo_full}/issues/{number}/comments"
 
     if errors:
-        # invalid - comment and ensure status/pending is NOT added
         msg = "##  建仓申请校验未通过\n\n请修正以下问题后重新提交：\n\n" + "\n".join(errors)
         api("POST", comment_path, {"body": msg})
-        # remove status/pending if present
         current_labels = [l["name"] for l in issue.get("labels", [])]
         if "status/pending" in current_labels:
             api("DELETE", f"/repos/{repo_full}/issues/{number}/labels/status/pending")
         print(f"Issue #{number}: validation FAILED")
     else:
-        # valid - add status/pending if not present
         current_labels = [l["name"] for l in issue.get("labels", [])]
         if "status/pending" not in current_labels:
             api("POST", f"/repos/{repo_full}/issues/{number}/labels", {"labels": ["status/pending"]})
             msg = "##  建仓申请校验通过\n\n所有字段符合规范，等待管理员审批。"
             api("POST", comment_path, {"body": msg})
-            print(f"Issue #{number}: validation PASSED, status/pending added")
+            notify_feishu(repo_name, repo_type, repo_full, number)
+            print(f"Issue #{number}: validation PASSED, status/pending added, Feishu notified")
         else:
             print(f"Issue #{number}: validation PASSED (already pending)")
 
