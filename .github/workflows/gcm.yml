@@ -1,0 +1,29 @@
+name: gcm
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_name:
+        required: true
+        type: string
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          python3 -c "import json,os,urllib.request
+t=os.environ['T']
+n=os.environ['N']
+u=urllib.request.Request('https://api.gitcode.com/api/v5/orgs/hd-vector/repos',
+  data=json.dumps({'name':n,'path':n,'private':False}).encode(),
+  headers={'PRIVATE-TOKEN':t,'Content-Type':'application/json'},method='POST')
+try:
+  r=urllib.request.urlopen(u,timeout=30)
+  print(json.loads(r.read()).get('html_url',''))
+except urllib.error.HTTPError as e:
+  print('err: '+str(e.code))
+"
+        env:
+          T: ${{ secrets.GITCODE_TOKEN }}
+          N: ${{ inputs.repo_name }}
