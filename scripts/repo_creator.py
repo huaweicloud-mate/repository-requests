@@ -12,7 +12,7 @@ huaweicloud-mate 建仓机器人 — 按 GOAT 建仓流程文档 v1.1
 
 import json, os, re, time, sys
 
-import urllib.request, urllib.error
+import urllib.request, urllib.error, urllib.parse
 
 
 
@@ -1039,7 +1039,7 @@ def assign_role(repo, role, users):
 
     for user in users:
 
-        api("PUT", f"/repos/{ORG}/{repo}/collaborators/{user}", "bot", {"permission": perm})
+        api("PUT", f"/repos/{ORG}/{repo}/collaborators/{urllib.parse.quote(user, safe='')}", "bot", {"permission": perm})
 
 
 
